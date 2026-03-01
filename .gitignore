@@ -1,0 +1,30 @@
+*.class
+
+# Package Files #
+*.jar
+*.war
+*.ear
+
+# eclipse files
+.classpath
+.project
+
+# IntelliJ
+*.iml
+*.iws
+*.ipr
+
+# paths
+.metadata/
+.settings/
+.idea/
+target/
+build/
+test-output/
+out/
+felix-cache/
+runner/
+tmp/
+.PVS-STudio/
+.gradle/
+

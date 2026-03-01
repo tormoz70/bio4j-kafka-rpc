@@ -1,0 +1,14 @@
+dependencies {
+    implementation "org.apache.kafka:kafka-clients:${rootProject.ext.kafkaVersion}"
+    implementation "com.google.protobuf:protobuf-java:${rootProject.ext.protobufVersion}"
+    implementation "org.slf4j:slf4j-api:2.0.9"
+
+    compileOnly "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+test {
+    useJUnitPlatform()
+}

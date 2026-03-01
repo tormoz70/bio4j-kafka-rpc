@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+option java_package = "io.bio4j.kafkarpc.example";
+option java_multiple_files = true;
+
+package example.greeter;
+
+service Greeter {
+  rpc GetGreeting (GetGreetingRequest) returns (GetGreetingResponse);
+  rpc SayHello (SayHelloRequest) returns (SayHelloResponse);
+}
+
+message GetGreetingRequest {
+  string name = 1;
+}
+
+message GetGreetingResponse {
+  string greeting = 1;
+}
+
+message SayHelloRequest {
+  string message = 1;
+}
+
+message SayHelloResponse {
+  string reply = 1;
+}

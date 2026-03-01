@@ -1,0 +1,26 @@
+
+ext {
+    protobufVersion = '3.25.5'
+    kafkaVersion = '3.7.0'
+    lombokVersion = '1.18.30'
+}
+
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'maven-publish'
+
+    group = 'io.bio4j'
+    version = '0.1.0-SNAPSHOT'
+
+    java {
+        toolchain { languageVersion = JavaLanguageVersion.of(21) }
+    }
+
+    repositories {
+        mavenCentral()
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+}

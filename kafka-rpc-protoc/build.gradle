@@ -1,0 +1,37 @@
+plugins {
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+dependencies {
+    implementation "com.google.protobuf:protobuf-java:${rootProject.ext.protobufVersion}"
+    implementation project(':kafka-rpc-runtime')
+}
+
+shadowJar {
+    archiveBaseName = 'protoc-gen-kafka-rpc'
+    archiveClassifier = ''
+    manifest {
+        attributes 'Main-Class': 'io.bio4j.kafkarpc.protoc.KafkaRpcGenerator'
+    }
+}
+
+jar {
+    enabled = false
+    dependsOn shadowJar
+}
+
+def pluginScriptDir = layout.buildDirectory.dir('scripts').get().asFile
+tasks.create('pluginScript', Copy) {
+    dependsOn shadowJar
+    from shadowJar.archiveFile
+    into pluginScriptDir
+    rename { 'protoc-gen-kafka-rpc.jar' }
+    doLast {
+        def jarPath = new File(pluginScriptDir, 'protoc-gen-kafka-rpc.jar').absolutePath
+        new File(pluginScriptDir, 'protoc-gen-kafka-rpc.bat').text = "@echo off\r\njava -jar \"$jarPath\" %*\r\n"
+        def sh = new File(pluginScriptDir, 'protoc-gen-kafka-rpc')
+        sh.text = "#!/bin/sh\nexec java -jar \"$jarPath\" \"\$@\"\n"
+        sh.executable = true
+    }
+}
+

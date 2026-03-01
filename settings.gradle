@@ -1,0 +1,5 @@
+rootProject.name = 'kafka-rpc'
+
+include 'kafka-rpc-runtime'
+include 'kafka-rpc-protoc'
+include 'example'

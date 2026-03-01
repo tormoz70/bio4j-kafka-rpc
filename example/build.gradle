@@ -1,0 +1,51 @@
+plugins {
+    id 'com.google.protobuf' version '0.9.4'
+    id 'application'
+}
+
+evaluationDependsOn ':kafka-rpc-protoc'
+
+dependencies {
+    implementation project(':kafka-rpc-runtime')
+    implementation "com.google.protobuf:protobuf-java:${rootProject.ext.protobufVersion}"
+
+    compileOnly "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
+    annotationProcessor "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
+}
+
+def kafkaRpcProtoc = project(':kafka-rpc-protoc')
+def pluginScriptTask = kafkaRpcProtoc.tasks.named('pluginScript').get()
+def pluginScriptDir = kafkaRpcProtoc.layout.buildDirectory.dir('scripts').get().asFile
+def isWindows = org.gradle.internal.os.OperatingSystem.current().windows
+def pluginPath = new File(pluginScriptDir, isWindows ? 'protoc-gen-kafka-rpc.bat' : 'protoc-gen-kafka-rpc').absolutePath
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:${rootProject.ext.protobufVersion}"
+    }
+    plugins {
+        kafkaRpc {
+            path = pluginPath
+        }
+    }
+    generateProtoTasks {
+        ofSourceSet('main').each { task ->
+            task.dependsOn pluginScriptTask
+            task.plugins {
+                kafkaRpc {}
+            }
+        }
+    }
+}
+
+sourceSets.main.java.srcDirs "${protobuf.generatedFilesBaseDir}/main/java", "${protobuf.generatedFilesBaseDir}/main/kafkaRpc"
+
+application {
+    mainClass = 'io.bio4j.kafkarpc.example.GreeterClient'
+}
+
+tasks.register('runServer', JavaExec) {
+    group = 'application'
+    mainClass = 'io.bio4j.kafkarpc.example.GreeterServer'
+    classpath = sourceSets.main.runtimeClasspath
+}
