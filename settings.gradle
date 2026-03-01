@@ -2,4 +2,5 @@ rootProject.name = 'bio4j-kafka-rpc'
 
 include 'kafka-rpc-protoc'
 include 'kafka-rpc-runtime'
+include 'kafka-rpc-spring-boot-starter'
 include 'example'

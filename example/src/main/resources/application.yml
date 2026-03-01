@@ -1,0 +1,9 @@
+spring:
+  application:
+    name: kafka-rpc-example
+
+kafka-rpc:
+  bootstrap-servers: localhost:9092
+  server-enabled: true
+  server-group-id: greeter-server
+  timeout-ms: 30000

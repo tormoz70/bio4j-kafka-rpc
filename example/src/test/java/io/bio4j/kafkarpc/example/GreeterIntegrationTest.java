@@ -1,117 +1,87 @@
 package io.bio4j.kafkarpc.example;
 
-import io.bio4j.kafkarpc.KafkaRpcChannel;
-import io.bio4j.kafkarpc.KafkaRpcServer;
-import org.junit.jupiter.api.AfterEach;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.NewTopic;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import java.util.List;
 import java.util.Properties;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @Testcontainers
 class GreeterIntegrationTest {
 
-    @Container
-    static KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.5.0"));
+    private static final String REQUEST_TOPIC = "greeter.request";
+    private static final String REPLY_TOPIC = "greeter.reply";
 
-    private ExecutorService serverExecutor;
-    private String bootstrapServers;
+    @Container
+    static final KafkaContainer kafka = new KafkaContainer(
+            DockerImageName.parse("confluentinc/cp-kafka:7.4.0"))
+            .withReuse(true);
+
+    @LocalServerPort
+    private int port;
+
+    @Autowired
+    private TestRestTemplate restTemplate;
+
+    @DynamicPropertySource
+    static void kafkaProperties(DynamicPropertyRegistry registry) {
+        registry.add("kafka-rpc.bootstrap-servers", kafka::getBootstrapServers);
+    }
 
     @BeforeEach
-    void setUp() {
-        bootstrapServers = kafka.getBootstrapServers();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (serverExecutor != null) {
-            serverExecutor.shutdownNow();
-        }
+    void setUp() throws Exception {
+        createTopics(kafka.getBootstrapServers());
     }
 
     @Test
-    void getGreetingReturnsExpectedResponse() throws Exception {
-        startServer();
-        Thread.sleep(2000);
-
-        Properties consumerConfig = consumerConfig();
-        Properties producerConfig = producerConfig();
-
-        try (var channel = new KafkaRpcChannel(producerConfig, consumerConfig,
-                "greeter.request", "greeter.reply")) {
-            var stub = new GreeterKafkaRpc.Stub(channel, "greeter.request", "greeter.reply");
-            var resp = stub.getGreeting(GetGreetingRequest.newBuilder().setName("Test").build());
-            assertEquals("Hello, Test", resp.getGreeting());
-        }
+    void greetReturnsExpectedResponse() {
+        ResponseEntity<String> response = restTemplate.getForEntity(
+                "http://localhost:" + port + "/greet?name=Testcontainers",
+                String.class);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("Hello, Testcontainers!", response.getBody());
     }
 
     @Test
-    void sayHelloReturnsExpectedResponse() throws Exception {
-        startServer();
-        Thread.sleep(2000);
+    void greetWithDefaultName() {
+        ResponseEntity<String> response = restTemplate.getForEntity(
+                "http://localhost:" + port + "/greet",
+                String.class);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals("Hello, World!", response.getBody());
+    }
 
-        Properties consumerConfig = consumerConfig();
-        Properties producerConfig = producerConfig();
-
-        try (var channel = new KafkaRpcChannel(producerConfig, consumerConfig,
-                "greeter.request", "greeter.reply")) {
-            var stub = new GreeterKafkaRpc.Stub(channel, "greeter.request", "greeter.reply");
-            var resp = stub.sayHello(SayHelloRequest.newBuilder().setMessage("Hi").build());
-            assertEquals("Echo: Hi", resp.getReply());
+    private void createTopics(String bootstrapServers) throws Exception {
+        var props = new Properties();
+        props.put("bootstrap.servers", bootstrapServers);
+        try (var admin = AdminClient.create(props)) {
+            try {
+                admin.createTopics(List.of(
+                        new NewTopic(REQUEST_TOPIC, 1, (short) 1),
+                        new NewTopic(REPLY_TOPIC, 1, (short) 1)
+                )).all().get();
+            } catch (Exception e) {
+                if (e.getCause() instanceof org.apache.kafka.common.errors.TopicExistsException) {
+                    return;
+                }
+                throw e;
+            }
         }
-    }
-
-    private void startServer() {
-        var impl = new GreeterKafkaRpc.ServiceBase() {
-            @Override
-            public String getRequestTopic() { return "greeter.request"; }
-            @Override
-            public String getReplyTopic() { return "greeter.reply"; }
-            @Override
-            protected GetGreetingResponse getGreeting(GetGreetingRequest req) {
-                return GetGreetingResponse.newBuilder().setGreeting("Hello, " + req.getName()).build();
-            }
-            @Override
-            protected SayHelloResponse sayHello(SayHelloRequest req) {
-                return SayHelloResponse.newBuilder().setReply("Echo: " + req.getMessage()).build();
-            }
-        };
-
-        Properties consumerConfig = consumerConfig();
-        Properties producerConfig = producerConfig();
-
-        KafkaRpcServer server = new KafkaRpcServer(consumerConfig, producerConfig,
-                impl.getRequestTopic(), impl.getReplyTopic(), impl.getHandlers());
-        serverExecutor = Executors.newSingleThreadExecutor();
-        serverExecutor.submit(() -> {
-            server.start();
-            return null;
-        });
-    }
-
-    private Properties consumerConfig() {
-        Properties p = new Properties();
-        p.put("bootstrap.servers", bootstrapServers);
-        p.put("group.id", "test-" + System.currentTimeMillis());
-        p.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        p.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer");
-        p.put("auto.offset.reset", "earliest");
-        return p;
-    }
-
-    private Properties producerConfig() {
-        Properties p = new Properties();
-        p.put("bootstrap.servers", bootstrapServers);
-        p.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-        p.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
-        return p;
     }
 }

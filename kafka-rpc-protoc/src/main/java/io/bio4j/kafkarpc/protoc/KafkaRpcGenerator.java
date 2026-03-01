@@ -73,6 +73,7 @@ public class KafkaRpcGenerator {
         sb.append("import io.bio4j.kafkarpc.KafkaRpcChannel;\n");
         sb.append("import io.bio4j.kafkarpc.KafkaRpcConstants;\n");
         sb.append("import io.bio4j.kafkarpc.KafkaRpcServer;\n");
+        sb.append("import io.bio4j.kafkarpc.KafkaRpcService;\n");
         sb.append("import java.util.Map;\n");
         sb.append("import java.util.Properties;\n");
         sb.append("import java.util.UUID;\n");
@@ -111,8 +112,8 @@ public class KafkaRpcGenerator {
         sb.append("  }\n\n");
 
         // ServiceBase
-        sb.append("  /** Server base - extend and override methods. */\n");
-        sb.append("  public abstract static class ServiceBase {\n");
+        sb.append("  /** Server base - extend and override methods. Implements KafkaRpcService for Spring. */\n");
+        sb.append("  public abstract static class ServiceBase implements KafkaRpcService {\n");
         sb.append("    public abstract String getRequestTopic();\n");
         sb.append("    public abstract String getReplyTopic();\n\n");
         sb.append("    public Map<String, KafkaRpcServer.MethodHandler> getHandlers() {\n");

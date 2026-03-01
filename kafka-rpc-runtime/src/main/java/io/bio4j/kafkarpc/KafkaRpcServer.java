@@ -122,7 +122,11 @@ public class KafkaRpcServer implements AutoCloseable {
 
         try {
             byte[] response = handler.handle(correlationId, record.value());
-            ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, record.key(), response);
+            String targetReplyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
+            if (targetReplyTopic == null || targetReplyTopic.isEmpty()) {
+                targetReplyTopic = replyTopic;
+            }
+            ProducerRecord<String, byte[]> reply = new ProducerRecord<>(targetReplyTopic, record.key(), response);
             reply.headers()
                     .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
                     .add(KafkaRpcConstants.HEADER_METHOD, (method != null ? method : "").getBytes());
