@@ -1,83 +1,73 @@
 package io.bio4j.kafkarpc.protoc;
 
-import com.google.protobuf.DescriptorProtos.*;
 import com.google.protobuf.compiler.PluginProtos;
+import com.google.protobuf.DescriptorProtos;
 
 import java.util.*;
 
 /**
- * protoc plugin that generates Kafka RPC client stubs and server base classes from .proto service definitions.
- * Generates only unary RPC methods (no streaming).
+ * Protoc plugin that generates Kafka RPC stubs and service base from .proto service definitions.
  */
 public class KafkaRpcGenerator {
 
     public static void main(String[] args) throws Exception {
-        PluginProtos.CodeGeneratorRequest request = PluginProtos.CodeGeneratorRequest.parseFrom(System.in);
-        PluginProtos.CodeGeneratorResponse response = generate(request);
+        var request = PluginProtos.CodeGeneratorRequest.parseFrom(System.in);
+        var response = generate(request);
         response.writeTo(System.out);
     }
 
     static PluginProtos.CodeGeneratorResponse generate(PluginProtos.CodeGeneratorRequest request) {
-        var responseBuilder = PluginProtos.CodeGeneratorResponse.newBuilder();
+        var builder = PluginProtos.CodeGeneratorResponse.newBuilder();
+        Map<String, String> packageByFile = new HashMap<>();
 
-        // Build type name -> file index for resolving cross-file types
-        Map<String, FileDescriptorProto> typeToFile = new HashMap<>();
-        for (FileDescriptorProto file : request.getProtoFileList()) {
-            String pkg = file.getPackage();
-            String prefix = pkg.isEmpty() ? "" : "." + pkg + ".";
-            for (DescriptorProto msg : file.getMessageTypeList()) {
-                typeToFile.put(prefix + msg.getName(), file);
+        for (DescriptorProtos.FileDescriptorProto file : request.getProtoFileList()) {
+            String pkg = file.getPackage().isEmpty() ? "" : file.getPackage() + ".";
+            for (var dep : file.getDependencyList()) {
+                packageByFile.put(dep, packageByFile.getOrDefault(dep, ""));
             }
+            packageByFile.put(file.getName(), pkg);
         }
 
-        Set<String> toGenerate = new HashSet<>(request.getFileToGenerateList());
-        Map<String, FileDescriptorProto> protoFiles = new HashMap<>();
-        for (FileDescriptorProto f : request.getProtoFileList()) {
-            protoFiles.put(f.getName(), f);
-        }
-
-        for (String fileName : toGenerate) {
-            FileDescriptorProto file = protoFiles.get(fileName);
+        for (String name : request.getFileToGenerateList()) {
+            DescriptorProtos.FileDescriptorProto file = null;
+            for (DescriptorProtos.FileDescriptorProto f : request.getProtoFileList()) {
+                if (f.getName().equals(name)) {
+                    file = f;
+                    break;
+                }
+            }
             if (file == null) continue;
 
-            for (ServiceDescriptorProto service : file.getServiceList()) {
-                if (service.getMethodCount() == 0) continue;
+            String javaPackage = file.getOptions().getJavaPackage();
+            if (javaPackage.isEmpty()) {
+                javaPackage = toJavaPackage(file.getPackage());
+            }
+            String outPkg = javaPackage;
 
-                // Only unary methods
-                var unaryMethods = service.getMethodList().stream()
-                        .filter(m -> !m.getClientStreaming() && !m.getServerStreaming())
-                        .toList();
-                if (unaryMethods.isEmpty()) continue;
-
-                String javaPackage = file.getOptions().hasJavaPackage()
-                        ? file.getOptions().getJavaPackage()
-                        : file.getPackage().replace(".", "");
-                String serviceName = service.getName();
-                String className = serviceName + "KafkaRpc";
-                String fullClassName = javaPackage + "." + className;
-                String path = javaPackage.replace(".", "/") + "/" + className + ".java";
-
-                String content = generateServiceClass(file, service, unaryMethods, javaPackage, typeToFile);
-                responseBuilder.addFile(
-                        PluginProtos.CodeGeneratorResponse.File.newBuilder()
-                                .setName(path)
-                                .setContent(content)
-                                .build());
+            for (DescriptorProtos.ServiceDescriptorProto service : file.getServiceList()) {
+                String className = service.getName() + "KafkaRpc";
+                String fullName = outPkg + "." + className;
+                String content = generateService(file, service, outPkg, javaPackage);
+                builder.addFile(PluginProtos.CodeGeneratorResponse.File.newBuilder()
+                    .setName(javaPackage.replace('.', '/') + "/" + className + ".java")
+                    .setContent(content)
+                    .build());
             }
         }
-
-        return responseBuilder.build();
+        return builder.build();
     }
 
-    private static String generateServiceClass(FileDescriptorProto file, ServiceDescriptorProto service,
-                                               List<MethodDescriptorProto> methods,
-                                               String javaPackage,
-                                               Map<String, FileDescriptorProto> typeToFile) {
-        String serviceName = service.getName();
-        var sb = new StringBuilder();
+    private static String toJavaPackage(String protoPackage) {
+        if (protoPackage.isEmpty()) return "";
+        return protoPackage.replace('.', '_');
+    }
 
+    private static String generateService(DescriptorProtos.FileDescriptorProto file,
+                                         DescriptorProtos.ServiceDescriptorProto service,
+                                         String outPkg, String javaPackage) {
+        StringBuilder sb = new StringBuilder();
         sb.append("// Generated by kafka-rpc-protoc. Do not edit.\n");
-        sb.append("package ").append(javaPackage).append(";\n\n");
+        sb.append("package ").append(outPkg).append(";\n\n");
         sb.append("import com.google.protobuf.InvalidProtocolBufferException;\n");
         sb.append("import java.io.IOException;\n");
         sb.append("import io.bio4j.kafkarpc.KafkaRpcChannel;\n");
@@ -87,15 +77,12 @@ public class KafkaRpcGenerator {
         sb.append("import java.util.Properties;\n");
         sb.append("import java.util.UUID;\n");
         sb.append("import java.util.HashMap;\n\n");
+        sb.append("/** Client stub for ").append(service.getName()).append(" service over Kafka. */\n");
+        sb.append("public final class ").append(service.getName()).append("KafkaRpc {\n\n");
+        sb.append("  public static final String SERVICE_NAME = \"").append(service.getName()).append("\";\n\n");
+        sb.append("  private ").append(service.getName()).append("KafkaRpc() {}\n\n");
 
-        // Stub (client)
-        sb.append("/** Client stub for ").append(serviceName).append(" service over Kafka. */\n");
-        sb.append("public final class ").append(serviceName).append("KafkaRpc {\n\n");
-
-        sb.append("  public static final String SERVICE_NAME = \"").append(serviceName).append("\";\n\n");
-
-        sb.append("  private ").append(serviceName).append("KafkaRpc() {}\n\n");
-
+        // Stub
         sb.append("  /** Blocking stub. */\n");
         sb.append("  public static final class Stub {\n");
         sb.append("    private final KafkaRpcChannel channel;\n");
@@ -107,94 +94,82 @@ public class KafkaRpcGenerator {
         sb.append("      this.replyTopic = replyTopic;\n");
         sb.append("    }\n\n");
 
-        for (MethodDescriptorProto method : methods) {
-            String methodName = camelCase(method.getName());
-            String inputType = toJavaType(method.getInputType(), file, javaPackage, typeToFile);
-            String outputType = toJavaType(method.getOutputType(), file, javaPackage, typeToFile);
-            String fullMethodName = serviceName + "/" + method.getName();
-
-            sb.append("    public ").append(outputType).append(" ").append(methodName).append("(")
-                    .append(inputType).append(" request) throws IOException, InvalidProtocolBufferException, java.util.concurrent.TimeoutException {\n");
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            String inputType = resolveType(method.getInputType(), file, javaPackage);
+            String outputType = resolveType(method.getOutputType(), file, javaPackage);
+            String methodName = lowerFirst(method.getName());
+            String fullMethod = service.getName() + "/" + method.getName();
+            sb.append("    public ").append(outputType).append(" ").append(methodName)
+              .append("(").append(inputType).append(" request) throws IOException, InvalidProtocolBufferException, java.util.concurrent.TimeoutException {\n");
             sb.append("      String correlationId = UUID.randomUUID().toString();\n");
             sb.append("      Map<String, String> headers = new HashMap<>();\n");
-            sb.append("      headers.put(KafkaRpcConstants.HEADER_METHOD, \"").append(fullMethodName).append("\");\n");
+            sb.append("      headers.put(KafkaRpcConstants.HEADER_METHOD, \"").append(fullMethod).append("\");\n");
             sb.append("      byte[] response = channel.request(correlationId, request.toByteArray(), headers);\n");
             sb.append("      return ").append(outputType).append(".parseFrom(response);\n");
             sb.append("    }\n\n");
         }
-
         sb.append("  }\n\n");
 
-        // Service base (server) - abstract class to extend
+        // ServiceBase
         sb.append("  /** Server base - extend and override methods. */\n");
         sb.append("  public abstract static class ServiceBase {\n");
         sb.append("    public abstract String getRequestTopic();\n");
         sb.append("    public abstract String getReplyTopic();\n\n");
         sb.append("    public Map<String, KafkaRpcServer.MethodHandler> getHandlers() {\n");
         sb.append("      Map<String, KafkaRpcServer.MethodHandler> m = new HashMap<>();\n");
-        for (MethodDescriptorProto method : methods) {
-            String fullMethodName = serviceName + "/" + method.getName();
-            sb.append("      m.put(\"").append(fullMethodName).append("\", getHandler(\"").append(fullMethodName).append("\"));\n");
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            String fullMethod = service.getName() + "/" + method.getName();
+            sb.append("      m.put(\"").append(fullMethod).append("\", getHandler(\"").append(fullMethod).append("\"));\n");
         }
         sb.append("      return m;\n");
         sb.append("    }\n\n");
         sb.append("    public KafkaRpcServer.MethodHandler getHandler(String method) {\n");
         sb.append("      return (correlationId, request) -> {\n");
         sb.append("        switch (method) {\n");
-
-        for (MethodDescriptorProto method : methods) {
-            String methodName = camelCase(method.getName());
-            String inputType = toJavaType(method.getInputType(), file, javaPackage, typeToFile);
-            String outputType = toJavaType(method.getOutputType(), file, javaPackage, typeToFile);
-            String fullMethodName = serviceName + "/" + method.getName();
-
-            sb.append("          case \"").append(fullMethodName).append("\" -> {\n");
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            String inputType = resolveType(method.getInputType(), file, javaPackage);
+            String outputType = resolveType(method.getOutputType(), file, javaPackage);
+            String methodName = lowerFirst(method.getName());
+            String fullMethod = service.getName() + "/" + method.getName();
+            sb.append("          case \"").append(fullMethod).append("\" -> {\n");
             sb.append("            ").append(inputType).append(" req;\n");
             sb.append("            try { req = ").append(inputType).append(".parseFrom(request); }\n");
             sb.append("            catch (InvalidProtocolBufferException e) { throw new RuntimeException(e); }\n");
             sb.append("            return ").append(methodName).append("(req).toByteArray();\n");
             sb.append("          }\n");
         }
-
         sb.append("          default -> throw new IllegalArgumentException(\"Unknown method: \" + method);\n");
         sb.append("        }\n");
         sb.append("      };\n");
         sb.append("    }\n\n");
-
-        for (MethodDescriptorProto method : methods) {
-            String methodName = camelCase(method.getName());
-            String inputType = toJavaType(method.getInputType(), file, javaPackage, typeToFile);
-            String outputType = toJavaType(method.getOutputType(), file, javaPackage, typeToFile);
-            sb.append("    protected abstract ").append(outputType).append(" ").append(methodName)
-                    .append("(").append(inputType).append(" request);\n");
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            String inputType = resolveType(method.getInputType(), file, javaPackage);
+            String outputType = resolveType(method.getOutputType(), file, javaPackage);
+            sb.append("    protected abstract ").append(outputType).append(" ")
+              .append(lowerFirst(method.getName())).append("(").append(inputType).append(" request);\n");
         }
-
         sb.append("  }\n");
         sb.append("}\n");
-
         return sb.toString();
     }
 
-    private static String toJavaType(String protoType, FileDescriptorProto currentFile,
-                                     String currentPackage, Map<String, FileDescriptorProto> typeToFile) {
-        if (protoType.startsWith(".")) protoType = protoType.substring(1);
-        String simpleName = protoType.contains(".") ? protoType.substring(protoType.lastIndexOf('.') + 1) : protoType;
-
-        FileDescriptorProto definingFile = typeToFile.get("." + protoType);
-        if (definingFile == null) {
-            definingFile = typeToFile.get(protoType);
+    private static String resolveType(String protoType, DescriptorProtos.FileDescriptorProto file, String javaPackage) {
+        if (protoType.startsWith(".")) {
+            protoType = protoType.substring(1);
         }
-        if (definingFile != null && definingFile.equals(currentFile)) {
-            return simpleName;
+        String shortName = protoType.contains(".") ? protoType.substring(protoType.lastIndexOf('.') + 1) : protoType;
+        String protoPkg = file.getPackage();
+        if (protoType.startsWith(protoPkg) || (protoPkg.isEmpty() && !protoType.contains("."))) {
+            return javaPackage + "." + shortName;
         }
-        String javaPkg = definingFile != null && definingFile.getOptions().hasJavaPackage()
-                ? definingFile.getOptions().getJavaPackage()
-                : (definingFile != null ? definingFile.getPackage().replace(".", "") : currentPackage);
-        return javaPkg + "." + simpleName;
+        if (protoType.contains(".")) {
+            String pkg = protoType.substring(0, protoType.lastIndexOf('.'));
+            return pkg.replace('.', '_') + "." + shortName;
+        }
+        return javaPackage + "." + shortName;
     }
 
-    private static String camelCase(String name) {
-        if (name == null || name.isEmpty()) return name;
-        return name.substring(0, 1).toLowerCase() + name.substring(1);
+    private static String lowerFirst(String s) {
+        return Character.toLowerCase(s.charAt(0)) + s.substring(1);
     }
 }

@@ -3,8 +3,10 @@ package io.bio4j.kafkarpc;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
@@ -24,8 +26,8 @@ import java.util.concurrent.TimeoutException;
 @lombok.Getter
 public class KafkaRpcChannel implements AutoCloseable {
 
-    private final KafkaProducer<String, byte[]> producer;
-    private final KafkaConsumer<String, byte[]> consumer;
+    private final Producer<String, byte[]> producer;
+    private final Consumer<String, byte[]> consumer;
     private final String requestTopic;
     private final String replyTopic;
     private final int timeoutMs;
@@ -50,6 +52,17 @@ public class KafkaRpcChannel implements AutoCloseable {
         cons.putAll(consumerConfig);
         ensureConsumerDefaults(cons);
         this.consumer = new KafkaConsumer<>(cons);
+        this.consumer.subscribe(Collections.singletonList(replyTopic));
+    }
+
+    /** Constructor for testing - inject producer and consumer. */
+    KafkaRpcChannel(Producer<String, byte[]> producer, Consumer<String, byte[]> consumer,
+                    String requestTopic, String replyTopic, int timeoutMs) {
+        this.producer = producer;
+        this.consumer = consumer;
+        this.requestTopic = requestTopic;
+        this.replyTopic = replyTopic;
+        this.timeoutMs = timeoutMs;
         this.consumer.subscribe(Collections.singletonList(replyTopic));
     }
 

@@ -3,8 +3,10 @@ package io.bio4j.kafkarpc;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
@@ -21,8 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 public class KafkaRpcServer implements AutoCloseable {
 
-    private final KafkaConsumer<String, byte[]> consumer;
-    private final KafkaProducer<String, byte[]> producer;
+    private final Consumer<String, byte[]> consumer;
+    private final Producer<String, byte[]> producer;
     private final String requestTopic;
     private final String replyTopic;
     private final Map<String, MethodHandler> handlers;
@@ -52,6 +54,16 @@ public class KafkaRpcServer implements AutoCloseable {
         prod.putIfAbsent("key.serializer", StringSerializer.class.getName());
         prod.putIfAbsent("value.serializer", ByteArraySerializer.class.getName());
         this.producer = new KafkaProducer<>(prod);
+    }
+
+    /** Constructor for testing - inject consumer and producer. */
+    KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
+                   String requestTopic, String replyTopic, Map<String, MethodHandler> handlers) {
+        this.consumer = consumer;
+        this.producer = producer;
+        this.requestTopic = requestTopic;
+        this.replyTopic = replyTopic;
+        this.handlers = Map.copyOf(handlers);
     }
 
     public void start() {

@@ -8,37 +8,25 @@ evaluationDependsOn ':kafka-rpc-protoc'
 dependencies {
     implementation project(':kafka-rpc-runtime')
     implementation "com.google.protobuf:protobuf-java:${rootProject.ext.protobufVersion}"
-
-    compileOnly "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
-    annotationProcessor "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
+    implementation "org.apache.kafka:kafka-clients:${rootProject.ext.kafkaVersion}"
 }
 
-def kafkaRpcProtoc = project(':kafka-rpc-protoc')
-def pluginScriptTask = kafkaRpcProtoc.tasks.named('pluginScript').get()
-def pluginScriptDir = kafkaRpcProtoc.layout.buildDirectory.dir('scripts').get().asFile
-def isWindows = org.gradle.internal.os.OperatingSystem.current().windows
-def pluginPath = new File(pluginScriptDir, isWindows ? 'protoc-gen-kafka-rpc.bat' : 'protoc-gen-kafka-rpc').absolutePath
+def protocPluginScript = project(':kafka-rpc-protoc').layout.buildDirectory.dir('scripts').get().asFile
+def pluginExe = new File(protocPluginScript, System.getProperty('os.name').toLowerCase().contains('windows') ? 'protoc-gen-kafka-rpc.bat' : 'protoc-gen-kafka-rpc')
 
 protobuf {
-    protoc {
-        artifact = "com.google.protobuf:protoc:${rootProject.ext.protobufVersion}"
-    }
+    protoc { artifact = "com.google.protobuf:protoc:${rootProject.ext.protobufVersion}" }
     plugins {
-        kafkaRpc {
-            path = pluginPath
-        }
+        kafkaRpc { path = pluginExe }
     }
     generateProtoTasks {
         ofSourceSet('main').each { task ->
-            task.dependsOn pluginScriptTask
-            task.plugins {
-                kafkaRpc {}
-            }
+            task.dependsOn ':kafka-rpc-protoc:pluginScript'
+            task.builtins { java {} }
+            task.plugins { kafkaRpc {} }
         }
     }
 }
-
-sourceSets.main.java.srcDirs "${protobuf.generatedFilesBaseDir}/main/java", "${protobuf.generatedFilesBaseDir}/main/kafkaRpc"
 
 application {
     mainClass = 'io.bio4j.kafkarpc.example.GreeterClient'
@@ -46,6 +34,18 @@ application {
 
 tasks.register('runServer', JavaExec) {
     group = 'application'
+    description = 'Run the Greeter server'
     mainClass = 'io.bio4j.kafkarpc.example.GreeterServer'
     classpath = sourceSets.main.runtimeClasspath
+}
+
+test {
+    useJUnitPlatform()
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.testcontainers:testcontainers:1.19.3'
+    testImplementation 'org.testcontainers:kafka:1.19.3'
+    testImplementation 'org.testcontainers:junit-jupiter:1.19.3'
 }
