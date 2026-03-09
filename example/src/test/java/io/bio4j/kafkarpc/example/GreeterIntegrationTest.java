@@ -10,6 +10,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.test.context.EmbeddedKafka;
 import org.springframework.test.annotation.DirtiesContext;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -31,6 +33,9 @@ class GreeterIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private GreeterStubProvider greeterStubProvider;
 
     @Test
     void greetReturnsExpectedResponse() {
@@ -74,5 +79,23 @@ class GreeterIntegrationTest {
                         r -> r.getStatusCode().is2xxSuccessful());
         assertNotNull(response.getBody());
         assertEquals("Echo: hello", response.getBody());
+    }
+
+    @Test
+    void getGreetingAsyncReturnsExpectedResponse() throws Exception {
+        var request = GetGreetingRequest.newBuilder().setName("AsyncTest").build();
+        CompletableFuture<GetGreetingResponse> future = greeterStubProvider.getAsyncStub().getGreetingAsync(request);
+        GetGreetingResponse response = future.get(30, TimeUnit.SECONDS);
+        assertNotNull(response);
+        assertEquals("Hello, AsyncTest!", response.getGreeting());
+    }
+
+    @Test
+    void sayHelloAsyncReturnsExpectedResponse() throws Exception {
+        var request = SayHelloRequest.newBuilder().setMessage("async-message").build();
+        CompletableFuture<SayHelloResponse> future = greeterStubProvider.getAsyncStub().sayHelloAsync(request);
+        SayHelloResponse response = future.get(30, TimeUnit.SECONDS);
+        assertNotNull(response);
+        assertEquals("Echo: async-message", response.getReply());
     }
 }
