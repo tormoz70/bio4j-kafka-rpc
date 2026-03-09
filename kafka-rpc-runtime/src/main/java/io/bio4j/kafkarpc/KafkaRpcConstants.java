@@ -16,6 +16,8 @@ public class KafkaRpcConstants {
     public static final String HEADER_STREAM_ID = "kafka-rpc-stream-id";
     /** Client sends to mark request as server-streaming. */
     public static final String HEADER_IS_STREAM = "kafka-rpc-stream";
+    /** Client sends with stream request: server idle timeout (ms). Server uses it to cancel stream when no healthcheck. */
+    public static final String HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS = "kafka-rpc-stream-server-idle-timeout-ms";
 
     public static final String STREAM_HEALTHCHECK_SUFFIX = "/healthcheck";
 
@@ -24,6 +26,6 @@ public class KafkaRpcConstants {
     public static final int DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS = 5_000;
     /** Default client timeout: no healthcheck response = stream dead (ms). */
     public static final int DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS = 15_000;
-    /** Default server timeout: no healthcheck from client = stop streaming (ms). */
+    /** Default for stream-server-idle-timeout (ms). Client-only: used when not set in config; server requires header. */
     public static final int DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS = 20_000;
 }

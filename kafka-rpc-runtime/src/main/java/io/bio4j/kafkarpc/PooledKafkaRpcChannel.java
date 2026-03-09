@@ -36,6 +36,9 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final String replyTopic;
     private final int timeoutMs;
     private final boolean streamHealthcheckEnabled;
+    private final int streamHealthcheckIntervalMs;
+    private final int streamHealthcheckTimeoutMs;
+    private final long streamServerIdleTimeoutMs;
     private final ConcurrentHashMap<String, CompletableFuture<byte[]>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BlockingQueue<StreamChunk>> streamQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -43,16 +46,33 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
                                  String requestTopic, String replyTopic, int timeoutMs) {
-        this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, true);
+        this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, true,
+                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
+                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
+                KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS);
     }
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
                                  String requestTopic, String replyTopic, int timeoutMs,
                                  boolean streamHealthcheckEnabled) {
+        this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
+                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
+                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
+                KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS);
+    }
+
+    public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
+                                 String requestTopic, String replyTopic, int timeoutMs,
+                                 boolean streamHealthcheckEnabled,
+                                 int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
+                                 long streamServerIdleTimeoutMs) {
         this.requestTopic = requestTopic;
         this.replyTopic = replyTopic;
         this.timeoutMs = timeoutMs;
         this.streamHealthcheckEnabled = streamHealthcheckEnabled;
+        this.streamHealthcheckIntervalMs = streamHealthcheckIntervalMs;
+        this.streamHealthcheckTimeoutMs = streamHealthcheckTimeoutMs;
+        this.streamServerIdleTimeoutMs = streamServerIdleTimeoutMs;
 
         Properties prod = new Properties();
         prod.putAll(producerConfig);
@@ -180,15 +200,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         record.headers().add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes());
         record.headers().add(KafkaRpcConstants.HEADER_REPLY_TOPIC, replyTopic.getBytes());
         record.headers().add(KafkaRpcConstants.HEADER_IS_STREAM, "true".getBytes());
+        record.headers().add(KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS, String.valueOf(streamServerIdleTimeoutMs).getBytes());
         if (headers != null) {
             headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes() : new byte[0]));
         }
         producer.send(record);
         String method = headers != null ? headers.get(KafkaRpcConstants.HEADER_METHOD) : "";
         StreamingCallImpl call = new StreamingCallImpl(correlationId, queue, this, method,
-                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
-                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
-                streamHealthcheckEnabled);
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckEnabled);
         call.setOnClose(() -> streamQueues.remove(correlationId));
         return call;
     }

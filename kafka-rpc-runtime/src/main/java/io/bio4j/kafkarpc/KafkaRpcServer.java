@@ -53,10 +53,12 @@ public class KafkaRpcServer implements AutoCloseable {
 
     private static class StreamContext {
         final StreamSinkImpl sink;
+        final long idleTimeoutMs;
         volatile long lastHealthcheckTime;
 
-        StreamContext(StreamSinkImpl sink) {
+        StreamContext(StreamSinkImpl sink, long idleTimeoutMs) {
             this.sink = sink;
+            this.idleTimeoutMs = idleTimeoutMs;
             this.lastHealthcheckTime = System.currentTimeMillis();
         }
     }
@@ -116,9 +118,8 @@ public class KafkaRpcServer implements AutoCloseable {
             try {
                 Thread.sleep(2000);
                 long now = System.currentTimeMillis();
-                long timeout = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
                 activeStreams.forEach((streamId, ctx) -> {
-                    if (now - ctx.lastHealthcheckTime > timeout) {
+                    if (now - ctx.lastHealthcheckTime > ctx.idleTimeoutMs) {
                         log.info("Stream {} idle timeout, cancelling", streamId);
                         ctx.sink.cancel();
                         activeStreams.remove(streamId);
@@ -198,8 +199,13 @@ public class KafkaRpcServer implements AutoCloseable {
                 log.warn("Dropping stream request: missing reply-topic");
                 return;
             }
+            Long idleTimeoutMs = parseStreamServerIdleTimeoutMs(record);
+            if (idleTimeoutMs == null) {
+                log.warn("Dropping stream request correlationId={}: missing or invalid required header {}", correlationId, KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS);
+                return;
+            }
             StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method);
-            activeStreams.put(correlationId, new StreamContext(sink));
+            activeStreams.put(correlationId, new StreamContext(sink, idleTimeoutMs));
             byte[] request = record.value();
             streamExecutor.submit(() -> {
                 try {
@@ -251,6 +257,20 @@ public class KafkaRpcServer implements AutoCloseable {
             return v != null && v.length > 0 ? new String(v) : null;
         }
         return null;
+    }
+
+    /** Parses required stream idle timeout header. Returns null if missing or invalid (server requires this header). */
+    private static Long parseStreamServerIdleTimeoutMs(ConsumerRecord<String, byte[]> record) {
+        String v = getHeader(record, KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS);
+        if (v == null || v.isEmpty()) {
+            return null;
+        }
+        try {
+            long ms = Long.parseLong(v.trim());
+            return ms > 0 ? ms : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     @Override

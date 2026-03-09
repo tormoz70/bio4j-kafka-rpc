@@ -40,8 +40,12 @@ public class KafkaRpcChannelPool {
         var consumerConfig = properties.getConsumerPropertiesForClientPooled(clientName);
         int timeoutMs = properties.getTimeoutMsForClient(clientName);
         boolean streamHealthcheckEnabled = properties.getStreamHealthcheckEnabledForClient(clientName);
+        int streamHealthcheckIntervalMs = properties.getStreamHealthcheckIntervalMsForClient(clientName);
+        int streamHealthcheckTimeoutMs = properties.getStreamHealthcheckTimeoutMsForClient(clientName);
+        long streamServerIdleTimeoutMs = properties.getStreamServerIdleTimeoutMsForClient(clientName);
         log.info("Creating pooled RPC channel for client {}", clientName);
-        return new PooledKafkaRpcChannel(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled);
+        return new PooledKafkaRpcChannel(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs,
+                streamHealthcheckEnabled, streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamServerIdleTimeoutMs);
     }
 
     @PreDestroy

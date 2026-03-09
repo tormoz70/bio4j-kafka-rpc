@@ -1,5 +1,6 @@
 package io.bio4j.kafkarpc.spring;
 
+import io.bio4j.kafkarpc.KafkaRpcConstants;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -26,6 +27,13 @@ public class KafkaRpcProperties {
 
     /** Default request timeout in milliseconds (client). */
     private int timeoutMs = 30_000;
+
+    /** Default stream healthcheck interval (client, ms). Overridable per client. */
+    private Integer streamHealthcheckIntervalMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS;
+    /** Default stream healthcheck timeout (client, ms). Overridable per client. */
+    private Integer streamHealthcheckTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
+    /** Default stream server idle timeout (ms). Client sends in stream request header; overridable per client. */
+    private Integer streamServerIdleTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
 
     /**
      * Per-client config. Key = client name (e.g. greeter). Used by generated *RpcChannel.
@@ -201,6 +209,39 @@ public class KafkaRpcProperties {
         return c == null || c.getStreamHealthcheckEnabled() == null || c.getStreamHealthcheckEnabled();
     }
 
+    /** Stream healthcheck interval for this client (ms). Uses client override or global default. */
+    public int getStreamHealthcheckIntervalMsForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getStreamHealthcheckIntervalMs() != null) {
+                return c.getStreamHealthcheckIntervalMs();
+            }
+        }
+        return streamHealthcheckIntervalMs != null ? streamHealthcheckIntervalMs : KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS;
+    }
+
+    /** Stream healthcheck timeout for this client (ms). Uses client override or global default. */
+    public int getStreamHealthcheckTimeoutMsForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getStreamHealthcheckTimeoutMs() != null) {
+                return c.getStreamHealthcheckTimeoutMs();
+            }
+        }
+        return streamHealthcheckTimeoutMs != null ? streamHealthcheckTimeoutMs : KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
+    }
+
+    /** Stream server idle timeout for this client (ms). Client sends value in stream request header; uses client override or global default. */
+    public long getStreamServerIdleTimeoutMsForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getStreamServerIdleTimeoutMs() != null) {
+                return c.getStreamServerIdleTimeoutMs();
+            }
+        }
+        return streamServerIdleTimeoutMs != null ? streamServerIdleTimeoutMs : KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
+    }
+
     @Data
     public static class Client {
         private String requestTopic;
@@ -209,6 +250,12 @@ public class KafkaRpcProperties {
         private Integer timeoutMs;
         /** When false, stream RPCs do not send healthcheck (for testing: server will cancel after idle timeout). Default true. */
         private Boolean streamHealthcheckEnabled = true;
+        /** Stream healthcheck interval (ms). Override global kafka-rpc.stream-healthcheck-interval-ms. */
+        private Integer streamHealthcheckIntervalMs;
+        /** Stream healthcheck timeout (ms). Override global kafka-rpc.stream-healthcheck-timeout-ms. */
+        private Integer streamHealthcheckTimeoutMs;
+        /** Stream server idle timeout (ms). Sent in stream request header; server cancels stream after no healthcheck. Override global kafka-rpc.stream-server-idle-timeout-ms. */
+        private Integer streamServerIdleTimeoutMs;
         /** Per-client producer overrides (on top of global kafka-rpc.producer). */
         private Map<String, String> producer = new HashMap<>();
         /** Per-client consumer overrides (on top of global kafka-rpc.consumer). */
