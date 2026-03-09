@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(classes = KafkaRpcExampleApplication.class, webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @EmbeddedKafka(
@@ -115,12 +116,17 @@ class GreeterIntegrationTest {
     @Test
     void streamCountReturnsSequenceAndEnds() throws Exception {
         var request = StreamCountRequest.newBuilder().setFrom(1).setTo(5).build();
-        try (var stream = greeterStubProvider.getStub().streamCount(request)) {
-            var values = new java.util.ArrayList<Integer>();
-            for (StreamCountItem item : stream) {
-                values.add(item.getValue());
-            }
-            assertEquals(java.util.List.of(1, 2, 3, 4, 5), values);
-        }
+        var values = new java.util.ArrayList<Integer>();
+        var done = new java.util.concurrent.CountDownLatch(1);
+        greeterStubProvider.getStub().streamCount(request, new GreeterKafkaRpc.StreamCountProcessor() {
+            @Override
+            public void onMessage(StreamCountItem item) { values.add(item.getValue()); }
+            @Override
+            public void onFinish() { done.countDown(); }
+            @Override
+            public void onError(Throwable error) { done.countDown(); }
+        });
+        assertTrue(done.await(60, java.util.concurrent.TimeUnit.SECONDS), "Stream should finish");
+        assertEquals(java.util.List.of(1, 2, 3, 4, 5), values);
     }
 }

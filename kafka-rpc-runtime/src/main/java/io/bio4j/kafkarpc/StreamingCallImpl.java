@@ -2,17 +2,15 @@ package io.bio4j.kafkarpc;
 
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
-final class StreamingCallImpl implements StreamingCall {
+final class StreamingCallImpl {
 
     private final String streamId;
     private final BlockingQueue<StreamChunk> queue;
@@ -20,9 +18,11 @@ final class StreamingCallImpl implements StreamingCall {
     private final String method;
     private final int healthcheckIntervalMs;
     private final int healthcheckTimeoutMs;
+    private final StreamingProcessor<byte[]> processor;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicLong healthcheckSeq = new AtomicLong(0);
     private Thread healthcheckThread;
+    private Thread drainThread;
     private volatile Runnable onClose;
 
     void setOnClose(Runnable onClose) {
@@ -30,17 +30,19 @@ final class StreamingCallImpl implements StreamingCall {
     }
 
     StreamingCallImpl(String streamId, BlockingQueue<StreamChunk> queue, KafkaRpcChannel channel,
-                     String method, int healthcheckIntervalMs, int healthcheckTimeoutMs,
-                     boolean enableHealthcheck) {
+                      String method, int healthcheckIntervalMs, int healthcheckTimeoutMs,
+                      boolean enableHealthcheck, StreamingProcessor<byte[]> processor) {
         this.streamId = streamId;
         this.queue = queue;
         this.channel = channel;
         this.method = method;
         this.healthcheckIntervalMs = healthcheckIntervalMs;
         this.healthcheckTimeoutMs = healthcheckTimeoutMs;
+        this.processor = processor;
         if (enableHealthcheck) {
             this.healthcheckThread = Thread.ofVirtual().name("stream-hc-" + streamId).start(this::runHealthcheck);
         }
+        this.drainThread = Thread.ofVirtual().name("stream-drain-" + streamId).start(this::drain);
     }
 
     private void runHealthcheck() {
@@ -68,64 +70,37 @@ final class StreamingCallImpl implements StreamingCall {
         }
     }
 
-    @Override
-    public Iterator<byte[]> iterator() {
-        return new Iterator<>() {
-            private StreamChunk nextChunk;
-            private boolean ended;
-
-            @Override
-            public boolean hasNext() {
-                if (ended) return false;
-                if (nextChunk != null) {
-                    if (nextChunk instanceof StreamChunk.End) {
-                        ended = true;
-                        return false;
+    private void drain() {
+        try {
+            while (!closed.get()) {
+                StreamChunk chunk = queue.take();
+                if (chunk instanceof StreamChunk.Data data) {
+                    try {
+                        processor.onMessage(data.bytes());
+                    } catch (Exception e) {
+                        log.warn("Processor onMessage error for {}: {}", streamId, e.getMessage());
+                        processor.onError(e);
+                        break;
                     }
-                    if (nextChunk instanceof StreamChunk.Poison p) {
-                        throw new RuntimeException("Stream failed", p.cause());
-                    }
-                    return true;
+                } else if (chunk instanceof StreamChunk.End) {
+                    processor.onFinish();
+                    break;
+                } else if (chunk instanceof StreamChunk.Poison poison) {
+                    processor.onError(poison.cause());
+                    break;
                 }
-                try {
-                    nextChunk = queue.take();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new RuntimeException(e);
-                }
-                if (nextChunk instanceof StreamChunk.End) {
-                    ended = true;
-                    return false;
-                }
-                if (nextChunk instanceof StreamChunk.Poison p) {
-                    throw new RuntimeException("Stream failed", p.cause());
-                }
-                return true;
             }
-
-            @Override
-            public byte[] next() {
-                if (!hasNext()) throw new java.util.NoSuchElementException();
-                byte[] bytes = ((StreamChunk.Data) nextChunk).bytes();
-                nextChunk = null;
-                return bytes;
-            }
-        };
-    }
-
-    @Override
-    public boolean isClosed() {
-        return closed.get();
-    }
-
-    @Override
-    public void close() {
-        if (closed.compareAndSet(false, true)) {
-            if (healthcheckThread != null) {
-                healthcheckThread.interrupt();
-            }
-            if (onClose != null) {
-                onClose.run();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            processor.onError(e);
+        } finally {
+            if (closed.compareAndSet(false, true)) {
+                if (healthcheckThread != null) {
+                    healthcheckThread.interrupt();
+                }
+                if (onClose != null) {
+                    onClose.run();
+                }
             }
         }
     }

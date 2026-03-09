@@ -40,8 +40,7 @@ public class KafkaRpcGenerator {
     private static final ClassName UUID = ClassName.get("java.util", "UUID");
     private static final ClassName HASH_MAP = ClassName.get("java.util", "HashMap");
     private static final ClassName MAP = ClassName.get("java.util", "Map");
-    private static final ClassName STREAMING_CALL = ClassName.get("io.bio4j.kafkarpc", "StreamingCall");
-    private static final ClassName TYPED_STREAMING_CALL = ClassName.get("io.bio4j.kafkarpc", "TypedStreamingCall");
+    private static final ClassName STREAMING_PROCESSOR = ClassName.get("io.bio4j.kafkarpc", "StreamingProcessor");
     private static final ClassName STREAM_SINK = ClassName.get("io.bio4j.kafkarpc", "StreamSink");
     private static final ClassName STREAM_METHOD_HANDLER = ClassName.get("io.bio4j.kafkarpc", "KafkaRpcServer", "StreamMethodHandler");
 
@@ -123,6 +122,13 @@ public class KafkaRpcGenerator {
                         .addModifiers(Modifier.PRIVATE)
                         .build());
 
+        // Processor inner classes for each stream method
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            if (isStreamMethod(method)) {
+                mainType.addType(buildStreamProcessorClass(method, file, javaPackage));
+            }
+        }
+
         // Stub inner class
         TypeSpec stubType = buildStubClass(file, service, javaPackage);
         mainType.addType(stubType);
@@ -195,6 +201,23 @@ public class KafkaRpcGenerator {
                 .build();
     }
 
+    private static TypeSpec buildStreamProcessorClass(DescriptorProtos.MethodDescriptorProto method,
+                                                      DescriptorProtos.FileDescriptorProto file,
+                                                      String javaPackage) {
+        TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+        String processorClassName = method.getName() + "Processor";
+        return TypeSpec.classBuilder(processorClassName)
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.ABSTRACT)
+                .addSuperinterface(ParameterizedTypeName.get(STREAMING_PROCESSOR, outputType))
+                .addJavadoc("Processor for $L stream. Extend and implement {@link #onMessage(Object)}.", lowerFirst(method.getName()))
+                .addMethod(MethodSpec.methodBuilder("onMessage")
+                        .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
+                        .addParameter(ParameterSpec.builder(outputType, "data").build())
+                        .returns(TypeName.VOID)
+                        .build())
+                .build();
+    }
+
     private static TypeSpec buildStubClass(DescriptorProtos.FileDescriptorProto file,
                                            DescriptorProtos.ServiceDescriptorProto service,
                                            String javaPackage) {
@@ -227,17 +250,18 @@ public class KafkaRpcGenerator {
                 stub.addMethod(onewayMethod);
             } else if (isStreamMethod(method)) {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
-                TypeName typedStream = ParameterizedTypeName.get(TYPED_STREAMING_CALL, outputType);
+                String processorClassName = method.getName() + "Processor";
+                ClassName processorType = ClassName.get(javaPackage, service.getName() + "KafkaRpc", processorClassName);
                 MethodSpec streamMethod = MethodSpec.methodBuilder(methodName)
                         .addModifiers(Modifier.PUBLIC)
-                        .returns(typedStream)
+                        .returns(TypeName.VOID)
                         .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addParameter(ParameterSpec.builder(processorType, "processor").build())
                         .addException(IO_EXCEPTION)
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
                         .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
                         .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("$T raw = channel.startStream(correlationId, request.toByteArray(), headers)", STREAMING_CALL)
-                        .addStatement("return new $T<>(raw, response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } })", TYPED_STREAMING_CALL, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(RuntimeException.class))
+                        .addStatement("channel.startStream(correlationId, request.toByteArray(), headers, new $T<byte[]>() { @Override public void onMessage(byte[] data) { try { processor.onMessage($T.parseFrom(data)); } catch ($T e) { processor.onError(e); } } @Override public void onFinish() { processor.onFinish(); } @Override public void onError($T t) { processor.onError(t); } })", STREAMING_PROCESSOR, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(Throwable.class))
                         .build();
                 stub.addMethod(streamMethod);
             } else {
@@ -294,18 +318,24 @@ public class KafkaRpcGenerator {
                 asyncStub.addMethod(asyncOneway);
             } else if (isStreamMethod(method)) {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
-                TypeName typedStream = ParameterizedTypeName.get(TYPED_STREAMING_CALL, outputType);
-                MethodSpec.Builder asyncStreamBuilder = MethodSpec.methodBuilder(methodName + "Async")
+                String processorClassName = method.getName() + "Processor";
+                ClassName processorType = ClassName.get(javaPackage, service.getName() + "KafkaRpc", processorClassName);
+                TypeName futureVoid = ParameterizedTypeName.get(COMPLETABLE_FUTURE, ClassName.get(Void.class));
+                ClassName throwable = ClassName.get(Throwable.class);
+                MethodSpec asyncStreamMethod = MethodSpec.methodBuilder(methodName + "Async")
                         .addModifiers(Modifier.PUBLIC)
-                        .returns(ParameterizedTypeName.get(COMPLETABLE_FUTURE, typedStream))
+                        .returns(futureVoid)
                         .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addParameter(ParameterSpec.builder(processorType, "processor").build())
+                        .addStatement("$T<Void> future = new $T<>()", COMPLETABLE_FUTURE, COMPLETABLE_FUTURE)
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
                         .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod);
-                asyncStreamBuilder.addStatement("$T raw", STREAMING_CALL);
-                asyncStreamBuilder.addCode("try {\n  raw = channel.startStream(correlationId, request.toByteArray(), headers);\n} catch ($T e) {\n  $T<$T> f = new $T<>();\n  f.completeExceptionally(e);\n  return f;\n}\n", IO_EXCEPTION, COMPLETABLE_FUTURE, typedStream, COMPLETABLE_FUTURE);
-                asyncStreamBuilder.addStatement("return $T.completedFuture(new $T<>(raw, response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } }))", COMPLETABLE_FUTURE, TYPED_STREAMING_CALL, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(RuntimeException.class));
-                asyncStub.addMethod(asyncStreamBuilder.build());
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("$T<byte[]> rawProcessor = new $T<byte[]>() { @Override public void onMessage(byte[] data) { try { processor.onMessage($T.parseFrom(data)); } catch ($T e) { processor.onError(e); } } @Override public void onFinish() { processor.onFinish(); future.complete(null); } @Override public void onError($T t) { processor.onError(t); future.completeExceptionally(t); } }", STREAMING_PROCESSOR, STREAMING_PROCESSOR, outputType, INVALID_PROTOCOL_BUFFER, throwable)
+                        .addStatement("try { channel.startStream(correlationId, request.toByteArray(), headers, rawProcessor); } catch ($T e) { future.completeExceptionally(e); }", IO_EXCEPTION)
+                        .addStatement("return future")
+                        .build();
+                asyncStub.addMethod(asyncStreamMethod);
             } else {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
                 TypeName futureOutputType = ParameterizedTypeName.get(COMPLETABLE_FUTURE, outputType);

@@ -193,7 +193,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     }
 
     @Override
-    public StreamingCall startStream(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException {
+    public void startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException {
         BlockingQueue<StreamChunk> queue = new LinkedBlockingQueue<>();
         streamQueues.put(correlationId, queue);
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
@@ -207,9 +207,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         producer.send(record);
         String method = headers != null ? headers.get(KafkaRpcConstants.HEADER_METHOD) : "";
         StreamingCallImpl call = new StreamingCallImpl(correlationId, queue, this, method,
-                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckEnabled);
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckEnabled, processor);
         call.setOnClose(() -> streamQueues.remove(correlationId));
-        return call;
     }
 
     @Override

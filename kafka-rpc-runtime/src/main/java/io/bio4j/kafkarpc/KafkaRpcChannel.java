@@ -29,10 +29,10 @@ public interface KafkaRpcChannel extends AutoCloseable {
     void send(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException;
 
     /**
-     * Start a server-streaming RPC. Sends request and returns a handle to read chunks from reply topic.
+     * Start a server-streaming RPC. Sends request; stream chunks are delivered to the processor on an internal thread.
      * Headers must include {@link KafkaRpcConstants#HEADER_METHOD}. Reply-topic is added by the channel.
      */
-    StreamingCall startStream(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException;
+    void startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException;
 
     CompletableFuture<byte[]> requestAsync(String correlationId, byte[] requestBytes);
 

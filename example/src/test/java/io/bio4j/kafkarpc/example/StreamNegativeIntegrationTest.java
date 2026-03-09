@@ -82,19 +82,29 @@ class StreamNegativeIntegrationTest {
         var request = StreamCountRequest.newBuilder().setFrom(1).setTo(10).build();
         var stub = new GreeterKafkaRpc.Stub(channelPool.getOrCreate("greeter-neg"));
         var values = new ArrayList<Integer>();
-        Exception streamError = null;
+        var streamError = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+        var done = new CountDownLatch(1);
 
-        try (var stream = stub.streamCount(request)) {
-            for (StreamCountItem item : stream) {
+        stub.streamCount(request, new GreeterKafkaRpc.StreamCountProcessor() {
+            @Override
+            public void onMessage(StreamCountItem item) {
                 values.add(item.getValue());
             }
-        } catch (Exception e) {
-            streamError = e;
-        }
-
+            @Override
+            public void onFinish() {
+                done.countDown();
+            }
+            @Override
+            public void onError(Throwable error) {
+                streamError.set(error);
+                done.countDown();
+            }
+        });
+        assertTrue(done.await(60, TimeUnit.SECONDS), "Stream should finish or fail");
         assertEquals(List.of(1, 2), values, "Should receive exactly 2 chunks before server 'dies'");
-        assertNotNull(streamError, "Expected exception when server stops responding to healthcheck");
-        String fullMessage = streamError.getMessage() + (streamError.getCause() != null ? " / " + streamError.getCause().getMessage() : "");
+        Throwable err = streamError.get();
+        assertNotNull(err, "Expected exception when server stops responding to healthcheck");
+        String fullMessage = err.getMessage() + (err.getCause() != null ? " / " + err.getCause().getMessage() : "");
         assertTrue(fullMessage.contains("Stream") || fullMessage.contains("healthcheck"),
                 "Expected stream or healthcheck in error: " + fullMessage);
     }
@@ -192,13 +202,16 @@ class StreamNegativeClientDiesIntegrationTest {
         var request = StreamCountRequest.newBuilder().setFrom(1).setTo(200).build();
         var stub = new GreeterKafkaRpc.Stub(channelPool.getOrCreate("greeter"));
         var values = new ArrayList<Integer>();
+        var gotTwo = new CountDownLatch(1);
 
-        try (var stream = stub.streamCount(request)) {
-            for (StreamCountItem item : stream) {
+        stub.streamCount(request, new GreeterKafkaRpc.StreamCountProcessor() {
+            @Override
+            public void onMessage(StreamCountItem item) {
                 values.add(item.getValue());
-                if (values.size() >= 2) break;
+                if (values.size() >= 2) gotTwo.countDown();
             }
-        }
+        });
+        assertTrue(gotTwo.await(30, TimeUnit.SECONDS), "Should receive at least 2 chunks");
         assertEquals(2, values.size());
 
         Thread.sleep(25_000);

@@ -131,7 +131,7 @@ public abstract class AbstractKafkaRpcChannel implements KafkaRpcChannel {
     }
 
     @Override
-    public StreamingCall startStream(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException {
+    public void startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException {
         throw new UnsupportedOperationException("Server streaming is only supported with PooledKafkaRpcChannel");
     }
 
