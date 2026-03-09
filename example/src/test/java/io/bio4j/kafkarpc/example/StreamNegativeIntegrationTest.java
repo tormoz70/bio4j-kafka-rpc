@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * Negative tests: server stops responding to healthcheck, client stops sending healthcheck.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(classes = KafkaRpcExampleApplication.class, webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @EmbeddedKafka(
         partitions = 1,
         topics = {"greeter.request", "greeter.reply", "greeter.request.neg", "greeter.reply.neg"},
