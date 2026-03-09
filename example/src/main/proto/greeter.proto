@@ -11,6 +11,7 @@ service Greeter {
   rpc GetGreeting (GetGreetingRequest) returns (GetGreetingResponse);
   rpc SayHello (SayHelloRequest) returns (SayHelloResponse);
   rpc Notify (NotifyRequest) returns (google.protobuf.Empty);
+  rpc StreamCount (StreamCountRequest) returns (StreamCountItem);
 }
 
 message GetGreetingRequest {
@@ -31,6 +32,15 @@ message SayHelloResponse {
 
 message NotifyRequest {
   string event = 1;
+}
+
+message StreamCountRequest {
+  int32 from = 1;
+  int32 to = 2;
+}
+
+message StreamCountItem {
+  int32 value = 1;
 }
 
 // Second example service

@@ -17,6 +17,9 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Server that consumes requests from a Kafka topic and dispatches to handlers. */
@@ -27,19 +30,50 @@ public class KafkaRpcServer implements AutoCloseable {
     private final Producer<String, byte[]> producer;
     private final String requestTopic;
     private final Map<String, MethodHandler> handlers;
+    private final Map<String, StreamMethodHandler> streamHandlers;
+    private final ConcurrentHashMap<String, StreamContext> activeStreams = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
     private Thread consumerThread;
+    private Thread streamIdleThread;
+    private final ExecutorService streamExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "kafka-rpc-stream-handler");
+        t.setDaemon(true);
+        return t;
+    });
 
     @FunctionalInterface
     public interface MethodHandler {
         byte[] handle(String correlationId, byte[] request);
     }
 
+    @FunctionalInterface
+    public interface StreamMethodHandler {
+        void handle(String correlationId, byte[] request, StreamSink sink);
+    }
+
+    private static class StreamContext {
+        final StreamSinkImpl sink;
+        volatile long lastHealthcheckTime;
+
+        StreamContext(StreamSinkImpl sink) {
+            this.sink = sink;
+            this.lastHealthcheckTime = System.currentTimeMillis();
+        }
+    }
+
     public KafkaRpcServer(Properties consumerConfig, Properties producerConfig,
                           String requestTopic,
                           Map<String, MethodHandler> handlers) {
+        this(consumerConfig, producerConfig, requestTopic, handlers, Map.of());
+    }
+
+    public KafkaRpcServer(Properties consumerConfig, Properties producerConfig,
+                          String requestTopic,
+                          Map<String, MethodHandler> handlers,
+                          Map<String, StreamMethodHandler> streamHandlers) {
         this.requestTopic = requestTopic;
         this.handlers = Map.copyOf(handlers);
+        this.streamHandlers = streamHandlers != null ? Map.copyOf(streamHandlers) : Map.of();
 
         Properties cons = new Properties();
         cons.putAll(consumerConfig);
@@ -57,21 +91,53 @@ public class KafkaRpcServer implements AutoCloseable {
     /** Constructor for testing - inject consumer and producer. */
     KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
                    String requestTopic, Map<String, MethodHandler> handlers) {
+        this(consumer, producer, requestTopic, handlers, Map.of());
+    }
+
+    KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
+                   String requestTopic, Map<String, MethodHandler> handlers,
+                   Map<String, StreamMethodHandler> streamHandlers) {
         this.consumer = consumer;
         this.producer = producer;
         this.requestTopic = requestTopic;
         this.handlers = Map.copyOf(handlers);
+        this.streamHandlers = streamHandlers != null ? Map.copyOf(streamHandlers) : Map.of();
     }
 
     public void start() {
         consumer.subscribe(Collections.singletonList(requestTopic));
         consumerThread = Thread.ofVirtual().name("kafka-rpc-server").start(this::run);
+        streamIdleThread = Thread.ofVirtual().name("kafka-rpc-stream-idle").start(this::runStreamIdleCheck);
         log.info("Kafka RPC server started, requestTopic={}", requestTopic);
+    }
+
+    private void runStreamIdleCheck() {
+        while (running.get()) {
+            try {
+                Thread.sleep(2000);
+                long now = System.currentTimeMillis();
+                long timeout = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
+                activeStreams.forEach((streamId, ctx) -> {
+                    if (now - ctx.lastHealthcheckTime > timeout) {
+                        log.info("Stream {} idle timeout, cancelling", streamId);
+                        ctx.sink.cancel();
+                        activeStreams.remove(streamId);
+                    }
+                });
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
     }
 
     public void stop() {
         running.set(false);
         consumer.wakeup();
+        if (streamIdleThread != null) {
+            streamIdleThread.interrupt();
+        }
+        streamExecutor.shutdown();
         if (consumerThread != null) {
             try {
                 consumerThread.join(5000);
@@ -100,15 +166,57 @@ public class KafkaRpcServer implements AutoCloseable {
     private void processRecord(ConsumerRecord<String, byte[]> record) {
         String correlationId = getHeader(record, KafkaRpcConstants.HEADER_CORRELATION_ID);
         String method = getHeader(record, KafkaRpcConstants.HEADER_METHOD);
+        String replyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
+        String isStream = getHeader(record, KafkaRpcConstants.HEADER_IS_STREAM);
 
         if (correlationId == null) {
             log.warn("Dropping message without correlation ID");
             return;
         }
 
+        if (method != null && method.endsWith(KafkaRpcConstants.STREAM_HEALTHCHECK_SUFFIX)) {
+            String streamId = getHeader(record, KafkaRpcConstants.HEADER_STREAM_ID);
+            if (streamId != null) {
+                StreamContext ctx = activeStreams.get(streamId);
+                if (ctx != null) {
+                    ctx.lastHealthcheckTime = System.currentTimeMillis();
+                    if (replyTopic != null && !replyTopic.isEmpty()) {
+                        ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, record.key(), new byte[0]);
+                        reply.headers()
+                                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
+                                .add(KafkaRpcConstants.HEADER_METHOD, (method != null ? method : "").getBytes());
+                        producer.send(reply);
+                    }
+                }
+            }
+            return;
+        }
+
+        if ("true".equals(isStream) && method != null && streamHandlers.containsKey(method)) {
+            StreamMethodHandler streamHandler = streamHandlers.get(method);
+            if (replyTopic == null || replyTopic.isEmpty()) {
+                log.warn("Dropping stream request: missing reply-topic");
+                return;
+            }
+            StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method);
+            activeStreams.put(correlationId, new StreamContext(sink));
+            byte[] request = record.value();
+            streamExecutor.submit(() -> {
+                try {
+                    streamHandler.handle(correlationId, request, sink);
+                    sink.end();
+                } catch (Exception e) {
+                    log.error("Stream handler error for correlationId={}", correlationId, e);
+                    sink.cancel();
+                } finally {
+                    activeStreams.remove(correlationId);
+                }
+            });
+            return;
+        }
+
         MethodHandler handler = method != null ? handlers.get(method) : null;
         if (handler == null) {
-            // try first (and only) handler if no method specified
             if (handlers.size() == 1) {
                 handler = handlers.values().iterator().next();
             } else {
@@ -122,7 +230,6 @@ public class KafkaRpcServer implements AutoCloseable {
             if (response == null) {
                 return;
             }
-            String replyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
             if (replyTopic == null || replyTopic.isEmpty()) {
                 log.warn("Dropping response for correlationId={}: missing reply-topic header from client", correlationId);
                 return;
@@ -134,7 +241,6 @@ public class KafkaRpcServer implements AutoCloseable {
             producer.send(reply);
         } catch (Exception e) {
             log.error("Handler error for correlationId={}", correlationId, e);
-            // TODO: send error response
         }
     }
 

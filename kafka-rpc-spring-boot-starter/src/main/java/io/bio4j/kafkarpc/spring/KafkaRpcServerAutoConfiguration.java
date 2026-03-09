@@ -48,7 +48,8 @@ public class KafkaRpcServerAutoConfiguration {
                 var server = new KafkaRpcServer(
                         consumerConfig, producerConfig,
                         service.getRequestTopic(),
-                        service.getHandlers());
+                        service.getHandlers(),
+                        service.getStreamHandlers());
                 servers.add(server);
                 server.start();
                 log.info("Started Kafka RPC server for {} (service {})", service.getRequestTopic(), serviceName);

@@ -111,4 +111,16 @@ class GreeterIntegrationTest {
         CompletableFuture<Void> future = greeterStubProvider.getAsyncStub().notifyAsync(request);
         future.get(30, TimeUnit.SECONDS);
     }
+
+    @Test
+    void streamCountReturnsSequenceAndEnds() throws Exception {
+        var request = StreamCountRequest.newBuilder().setFrom(1).setTo(5).build();
+        try (var stream = greeterStubProvider.getStub().streamCount(request)) {
+            var values = new java.util.ArrayList<Integer>();
+            for (StreamCountItem item : stream) {
+                values.add(item.getValue());
+            }
+            assertEquals(java.util.List.of(1, 2, 3, 4, 5), values);
+        }
+    }
 }

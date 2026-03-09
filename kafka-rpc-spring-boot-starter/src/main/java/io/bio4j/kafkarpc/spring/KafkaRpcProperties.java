@@ -194,12 +194,21 @@ public class KafkaRpcProperties {
         return c != null ? c.getReplyTopic() : null;
     }
 
+    /** Whether stream healthcheck is enabled for this client. Default true. */
+    public boolean getStreamHealthcheckEnabledForClient(String clientName) {
+        if (clientName == null || clients == null) return true;
+        var c = clients.get(clientName);
+        return c == null || c.getStreamHealthcheckEnabled() == null || c.getStreamHealthcheckEnabled();
+    }
+
     @Data
     public static class Client {
         private String requestTopic;
         private String replyTopic;
         /** Override global timeout for this client (ms). */
         private Integer timeoutMs;
+        /** When false, stream RPCs do not send healthcheck (for testing: server will cancel after idle timeout). Default true. */
+        private Boolean streamHealthcheckEnabled = true;
         /** Per-client producer overrides (on top of global kafka-rpc.producer). */
         private Map<String, String> producer = new HashMap<>();
         /** Per-client consumer overrides (on top of global kafka-rpc.consumer). */

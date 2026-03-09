@@ -40,6 +40,10 @@ public class KafkaRpcGenerator {
     private static final ClassName UUID = ClassName.get("java.util", "UUID");
     private static final ClassName HASH_MAP = ClassName.get("java.util", "HashMap");
     private static final ClassName MAP = ClassName.get("java.util", "Map");
+    private static final ClassName STREAMING_CALL = ClassName.get("io.bio4j.kafkarpc", "StreamingCall");
+    private static final ClassName TYPED_STREAMING_CALL = ClassName.get("io.bio4j.kafkarpc", "TypedStreamingCall");
+    private static final ClassName STREAM_SINK = ClassName.get("io.bio4j.kafkarpc", "StreamSink");
+    private static final ClassName STREAM_METHOD_HANDLER = ClassName.get("io.bio4j.kafkarpc", "KafkaRpcServer", "StreamMethodHandler");
 
     public static void main(String[] args) throws Exception {
         var request = PluginProtos.CodeGeneratorRequest.parseFrom(System.in);
@@ -221,6 +225,21 @@ public class KafkaRpcGenerator {
                         .addStatement("channel.send(correlationId, request.toByteArray(), headers)")
                         .build();
                 stub.addMethod(onewayMethod);
+            } else if (isStreamMethod(method)) {
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName typedStream = ParameterizedTypeName.get(TYPED_STREAMING_CALL, outputType);
+                MethodSpec streamMethod = MethodSpec.methodBuilder(methodName)
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(typedStream)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addException(IO_EXCEPTION)
+                        .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
+                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("$T raw = channel.startStream(correlationId, request.toByteArray(), headers)", STREAMING_CALL)
+                        .addStatement("return new $T<>(raw, response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } })", TYPED_STREAMING_CALL, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(RuntimeException.class))
+                        .build();
+                stub.addMethod(streamMethod);
             } else {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
                 MethodSpec methodBuilder = MethodSpec.methodBuilder(methodName)
@@ -273,6 +292,20 @@ public class KafkaRpcGenerator {
                         .addStatement("return $T.runAsync(() -> { try { channel.send(correlationId, request.toByteArray(), headers); } catch ($T e) { throw new $T(e); } })", COMPLETABLE_FUTURE, IO_EXCEPTION, COMPLETION_EXCEPTION)
                         .build();
                 asyncStub.addMethod(asyncOneway);
+            } else if (isStreamMethod(method)) {
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName typedStream = ParameterizedTypeName.get(TYPED_STREAMING_CALL, outputType);
+                MethodSpec.Builder asyncStreamBuilder = MethodSpec.methodBuilder(methodName + "Async")
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(ParameterizedTypeName.get(COMPLETABLE_FUTURE, typedStream))
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
+                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod);
+                asyncStreamBuilder.addStatement("$T raw", STREAMING_CALL);
+                asyncStreamBuilder.addCode("try {\n  raw = channel.startStream(correlationId, request.toByteArray(), headers);\n} catch ($T e) {\n  $T<$T> f = new $T<>();\n  f.completeExceptionally(e);\n  return f;\n}\n", IO_EXCEPTION, COMPLETABLE_FUTURE, typedStream, COMPLETABLE_FUTURE);
+                asyncStreamBuilder.addStatement("return $T.completedFuture(new $T<>(raw, response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } }))", COMPLETABLE_FUTURE, TYPED_STREAMING_CALL, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(RuntimeException.class));
+                asyncStub.addMethod(asyncStreamBuilder.build());
             } else {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
                 TypeName futureOutputType = ParameterizedTypeName.get(COMPLETABLE_FUTURE, outputType);
@@ -327,17 +360,19 @@ public class KafkaRpcGenerator {
                 .returns(ParameterizedTypeName.get(MAP, ClassName.get(String.class), methodHandler))
                 .addStatement("$T<String, $T> m = new $T<>()", Map.class, methodHandler, HashMap.class);
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            if (isStreamMethod(method)) continue;
             String fullMethod = service.getName() + "/" + method.getName();
             getHandlers.addStatement("m.put($S, getHandler($S))", fullMethod, fullMethod);
         }
         getHandlers.addStatement("return m");
         serviceBase.addMethod(getHandlers.build());
 
-        // getHandler(String method) with switch
+        // getHandler(String method) with switch (non-stream only)
         CodeBlock.Builder switchBlock = CodeBlock.builder()
                 .add("return (correlationId, request) -> {\n")
                 .add("  switch (method) {\n");
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            if (isStreamMethod(method)) continue;
             TypeName inputType = typeName(method.getInputType(), file, javaPackage);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
@@ -364,6 +399,46 @@ public class KafkaRpcGenerator {
                 .addCode(switchBlock.build())
                 .build());
 
+        // getStreamHandlers()
+        MethodSpec.Builder getStreamHandlers = MethodSpec.methodBuilder("getStreamHandlers")
+                .addModifiers(Modifier.PUBLIC)
+                .returns(ParameterizedTypeName.get(MAP, ClassName.get(String.class), STREAM_METHOD_HANDLER))
+                .addStatement("$T<String, $T> m = new $T<>()", Map.class, STREAM_METHOD_HANDLER, HashMap.class);
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            if (!isStreamMethod(method)) continue;
+            String fullMethod = service.getName() + "/" + method.getName();
+            getStreamHandlers.addStatement("m.put($S, getStreamHandler($S))", fullMethod, fullMethod);
+        }
+        getStreamHandlers.addStatement("return m");
+        serviceBase.addMethod(getStreamHandlers.build());
+
+        // getStreamHandler(String method) with switch
+        CodeBlock.Builder streamSwitchBlock = CodeBlock.builder()
+                .add("return (correlationId, request, sink) -> {\n")
+                .add("  switch (method) {\n");
+        for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
+            if (!isStreamMethod(method)) continue;
+            TypeName inputType = typeName(method.getInputType(), file, javaPackage);
+            String methodName = lowerFirst(method.getName());
+            String fullMethod = service.getName() + "/" + method.getName();
+            streamSwitchBlock.add("    case $S -> {\n", fullMethod);
+            streamSwitchBlock.add("      $T req;\n", inputType);
+            streamSwitchBlock.add("      try { req = $T.parseFrom(request); }\n", inputType);
+            streamSwitchBlock.add("      catch ($T e) { throw new RuntimeException(e); }\n", INVALID_PROTOCOL_BUFFER);
+            streamSwitchBlock.add("      try { $L(req, sink); } catch ($T e) { throw new RuntimeException(e); }\n", methodName, IO_EXCEPTION);
+            streamSwitchBlock.add("    }\n");
+        }
+        streamSwitchBlock.add("    default -> throw new $T($S + method);\n", IllegalArgumentException.class, "Unknown stream method: ");
+        streamSwitchBlock.add("  }\n");
+        streamSwitchBlock.add("};\n");
+
+        serviceBase.addMethod(MethodSpec.methodBuilder("getStreamHandler")
+                .addModifiers(Modifier.PUBLIC)
+                .returns(STREAM_METHOD_HANDLER)
+                .addParameter(String.class, "method")
+                .addCode(streamSwitchBlock.build())
+                .build());
+
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             TypeName inputType = typeName(method.getInputType(), file, javaPackage);
             String methodName = lowerFirst(method.getName());
@@ -372,6 +447,14 @@ public class KafkaRpcGenerator {
                         .addModifiers(Modifier.PROTECTED, Modifier.ABSTRACT)
                         .returns(TypeName.VOID)
                         .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .build());
+            } else if (isStreamMethod(method)) {
+                serviceBase.addMethod(MethodSpec.methodBuilder(methodName)
+                        .addModifiers(Modifier.PROTECTED, Modifier.ABSTRACT)
+                        .returns(TypeName.VOID)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addParameter(ParameterSpec.builder(STREAM_SINK, "sink").build())
+                        .addException(IO_EXCEPTION)
                         .build());
             } else {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
@@ -419,5 +502,10 @@ public class KafkaRpcGenerator {
     private static boolean isOneway(DescriptorProtos.MethodDescriptorProto method) {
         String out = method.getOutputType();
         return "google.protobuf.Empty".equals(out) || ".google.protobuf.Empty".equals(out);
+    }
+
+    /** Server-streaming: client gets stream of messages. Convention: method name starts with "Stream". */
+    private static boolean isStreamMethod(DescriptorProtos.MethodDescriptorProto method) {
+        return method.getName().startsWith("Stream");
     }
 }
