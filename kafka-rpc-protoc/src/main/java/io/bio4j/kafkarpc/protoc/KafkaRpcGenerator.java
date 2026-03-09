@@ -28,6 +28,7 @@ public class KafkaRpcGenerator {
     private static final ClassName KAFKA_RPC_CHANNEL_POOL = ClassName.get("io.bio4j.kafkarpc.spring", "KafkaRpcChannelPool");
     private static final ClassName KAFKA_RPC_CONSTANTS = ClassName.get("io.bio4j.kafkarpc", "KafkaRpcConstants");
     private static final ClassName KAFKA_RPC_PROPERTIES = ClassName.get("io.bio4j.kafkarpc.spring", "KafkaRpcProperties");
+    private static final ClassName KAFKA_RPC_PROPERTIES_SERVICE = ClassName.get("io.bio4j.kafkarpc.spring", "KafkaRpcProperties", "Service");
     private static final ClassName COMPONENT = ClassName.get("org.springframework.stereotype", "Component");
     private static final ClassName KAFKA_RPC_SERVER = ClassName.get("io.bio4j.kafkarpc", "KafkaRpcServer");
     private static final ClassName KAFKA_RPC_SERVICE = ClassName.get("io.bio4j.kafkarpc", "KafkaRpcService");
@@ -221,15 +222,25 @@ public class KafkaRpcGenerator {
         TypeSpec.Builder serviceBase = TypeSpec.classBuilder("ServiceBase")
                 .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT, Modifier.STATIC)
                 .addSuperinterface(KAFKA_RPC_SERVICE)
-                .addJavadoc("Server base - extend and override methods. Implements KafkaRpcService for Spring.")
+                .addJavadoc("Server base - extend, call super(properties), and override RPC methods. requestTopic from config.")
+                .addField(FieldSpec.builder(KAFKA_RPC_PROPERTIES, "properties", Modifier.PROTECTED, Modifier.FINAL)
+                        .build())
+                .addMethod(MethodSpec.constructorBuilder()
+                        .addModifiers(Modifier.PUBLIC)
+                        .addParameter(KAFKA_RPC_PROPERTIES, "properties")
+                        .addStatement("this.properties = properties")
+                        .build())
                 .addMethod(MethodSpec.methodBuilder("getServiceName")
                         .addModifiers(Modifier.PUBLIC)
                         .returns(String.class)
                         .addStatement("return $S", serviceName)
                         .build())
                 .addMethod(MethodSpec.methodBuilder("getRequestTopic")
-                        .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT)
+                        .addModifiers(Modifier.PUBLIC)
                         .returns(String.class)
+                        .addStatement("String topic = properties.getService().getOrDefault(getServiceName(), new $T()).getRequestTopic()", KAFKA_RPC_PROPERTIES_SERVICE)
+                        .addStatement("if (topic == null || topic.isEmpty()) throw new $T(\"kafka-rpc.service.\" + getServiceName() + \".request-topic must be set\")", IllegalStateException.class)
+                        .addStatement("return topic")
                         .build());
 
         ClassName methodHandler = ClassName.get("io.bio4j.kafkarpc", "KafkaRpcServer", "MethodHandler");
