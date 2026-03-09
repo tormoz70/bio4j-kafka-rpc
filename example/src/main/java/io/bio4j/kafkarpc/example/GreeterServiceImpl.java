@@ -1,18 +1,24 @@
 package io.bio4j.kafkarpc.example;
 
+import io.bio4j.kafkarpc.spring.KafkaRpcProperties;
 import org.springframework.stereotype.Component;
 
 @Component
 public class GreeterServiceImpl extends GreeterKafkaRpc.ServiceBase {
 
-    @Override
-    public String getRequestTopic() {
-        return "greeter.request";
+    private final String requestTopic;
+
+    public GreeterServiceImpl(KafkaRpcProperties properties) {
+        this.requestTopic = properties.getService().getOrDefault("greeter", new KafkaRpcProperties.Service())
+                .getRequestTopic();
+        if (this.requestTopic == null || this.requestTopic.isEmpty()) {
+            throw new IllegalStateException("kafka-rpc.service.greeter.request-topic must be set");
+        }
     }
 
     @Override
-    public String getReplyTopic() {
-        return "greeter.reply";
+    public String getRequestTopic() {
+        return requestTopic;
     }
 
     @Override

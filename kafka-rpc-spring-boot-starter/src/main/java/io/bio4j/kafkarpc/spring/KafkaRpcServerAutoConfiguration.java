@@ -39,44 +39,25 @@ public class KafkaRpcServerAutoConfiguration {
 
         @jakarta.annotation.PostConstruct
         public void start() {
-            var consumerConfig = baseConsumerConfig();
-            var producerConfig = baseProducerConfig();
-
             for (KafkaRpcService service : services) {
-                var serverConfig = new Properties();
-                serverConfig.putAll(consumerConfig);
-                serverConfig.put("group.id", properties.getServerGroupId() + "-" + service.getRequestTopic());
+                String serviceName = service.getServiceName();
+                var consumerConfig = properties.getConsumerPropertiesForServer(serviceName);
+                var producerConfig = properties.getProducerPropertiesForServer(serviceName);
+                consumerConfig.put("group.id", properties.getServerGroupId() + "-" + service.getRequestTopic());
 
                 var server = new KafkaRpcServer(
-                        serverConfig, baseProducerConfig(),
-                        service.getRequestTopic(), service.getReplyTopic(),
+                        consumerConfig, producerConfig,
+                        service.getRequestTopic(),
                         service.getHandlers());
                 servers.add(server);
                 server.start();
-                log.info("Started Kafka RPC server for {} -> {}", service.getRequestTopic(), service.getReplyTopic());
+                log.info("Started Kafka RPC server for {} (service {})", service.getRequestTopic(), serviceName);
             }
         }
 
         @PreDestroy
         public void stop() {
             servers.forEach(KafkaRpcServer::close);
-        }
-
-        private Properties baseConsumerConfig() {
-            var p = new Properties();
-            p.put("bootstrap.servers", properties.getBootstrapServers());
-            p.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-            p.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer");
-            p.put("auto.offset.reset", "earliest");
-            return p;
-        }
-
-        private Properties baseProducerConfig() {
-            var p = new Properties();
-            p.put("bootstrap.servers", properties.getBootstrapServers());
-            p.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-            p.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
-            return p;
         }
     }
 }

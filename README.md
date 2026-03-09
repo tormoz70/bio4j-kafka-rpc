@@ -71,25 +71,57 @@ protobuf {
 ```java
 var impl = new GreeterKafkaRpc.ServiceBase() {
   @Override public String getRequestTopic() { return "greeter.request"; }
-  @Override public String getReplyTopic() { return "greeter.reply"; }
   @Override protected GetGreetingResponse getGreeting(GetGreetingRequest req) {
     return GetGreetingResponse.newBuilder().setGreeting("Hello, " + req.getName()).build();
   }
 };
 var server = new KafkaRpcServer(consumerConfig, producerConfig,
-    impl.getRequestTopic(), impl.getReplyTopic(), impl.getHandlers());
+    impl.getRequestTopic(), impl.getHandlers());
 server.start();
 ```
+Reply topic is always taken from the client request header; the server does not need it in config.
 
 ### 5. Клиент
 
+Для каждого сервиса генерируется свой канал (например `GreeterRpcChannel`); конфигурация (producer/consumer, топики) берётся из `application.yml` через `KafkaRpcProperties`.
+
 ```java
-try (var channel = new KafkaRpcChannel(producerConfig, consumerConfig,
-        "greeter.request", "greeter.reply")) {
-  var stub = new GreeterKafkaRpc.Stub(channel, "greeter.request", "greeter.reply");
+try (var channel = new GreeterRpcChannel(properties)) {
+  var stub = new GreeterKafkaRpc.Stub(channel);
   var resp = stub.getGreeting(GetGreetingRequest.newBuilder().setName("World").build());
   System.out.println(resp.getGreeting());
 }
+```
+
+### 6. Конфигурация (много клиентов и серверов)
+
+В `application.yml` под `kafka-rpc`:
+- **Общие настройки:** `bootstrap-servers`, `producer`, `consumer` — база для всех клиентов и серверов.
+- **Клиенты:** `clients.<имя>` (имя = сервис в нижнем регистре, например `greeter`). Для каждого: `request-topic`, `reply-topic`, опционально `timeout-ms`, `producer`, `consumer` (переопределяют общие).
+- **Серверы (сервисы):** `service.<имя>`. Для каждого: `request-topic`, опционально `producer`, `consumer` (переопределяют общие).
+
+Пример с двумя клиентами и переопределением только для одного:
+
+```yaml
+kafka-rpc:
+  bootstrap-servers: localhost:9092
+  producer: { acks: all }
+  consumer: {}
+  clients:
+    greeter:
+      request-topic: greeter.request
+      reply-topic: greeter.reply
+    inventory:
+      request-topic: inventory.request
+      reply-topic: inventory.reply
+      timeout-ms: 10000
+      producer: { linger.ms: "5" }
+  service:
+    greeter:
+      request-topic: greeter.request
+    inventory:
+      request-topic: inventory.request
+      consumer: { max.poll.records: "100" }
 ```
 
 ## Сборка

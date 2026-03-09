@@ -36,7 +36,7 @@ class KafkaRpcChannelTest {
         consumer.updateBeginningOffsets(Map.of(new TopicPartition(REPLY_TOPIC, 0), 0L));
         consumer.updateEndOffsets(Map.of(new TopicPartition(REPLY_TOPIC, 0), 1L));
 
-        channel = new KafkaRpcChannel(producer, consumer, REQUEST_TOPIC, REPLY_TOPIC, 5_000);
+        channel = new AbstractKafkaRpcChannel(producer, consumer, REQUEST_TOPIC, REPLY_TOPIC, 5_000) { };
     }
 
     @AfterEach

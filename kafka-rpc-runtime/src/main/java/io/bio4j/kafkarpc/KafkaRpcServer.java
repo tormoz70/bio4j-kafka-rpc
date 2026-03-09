@@ -26,7 +26,6 @@ public class KafkaRpcServer implements AutoCloseable {
     private final Consumer<String, byte[]> consumer;
     private final Producer<String, byte[]> producer;
     private final String requestTopic;
-    private final String replyTopic;
     private final Map<String, MethodHandler> handlers;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private Thread consumerThread;
@@ -37,10 +36,9 @@ public class KafkaRpcServer implements AutoCloseable {
     }
 
     public KafkaRpcServer(Properties consumerConfig, Properties producerConfig,
-                          String requestTopic, String replyTopic,
+                          String requestTopic,
                           Map<String, MethodHandler> handlers) {
         this.requestTopic = requestTopic;
-        this.replyTopic = replyTopic;
         this.handlers = Map.copyOf(handlers);
 
         Properties cons = new Properties();
@@ -58,18 +56,17 @@ public class KafkaRpcServer implements AutoCloseable {
 
     /** Constructor for testing - inject consumer and producer. */
     KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
-                   String requestTopic, String replyTopic, Map<String, MethodHandler> handlers) {
+                   String requestTopic, Map<String, MethodHandler> handlers) {
         this.consumer = consumer;
         this.producer = producer;
         this.requestTopic = requestTopic;
-        this.replyTopic = replyTopic;
         this.handlers = Map.copyOf(handlers);
     }
 
     public void start() {
         consumer.subscribe(Collections.singletonList(requestTopic));
         consumerThread = Thread.ofVirtual().name("kafka-rpc-server").start(this::run);
-        log.info("Kafka RPC server started, requestTopic={}, replyTopic={}", requestTopic, replyTopic);
+        log.info("Kafka RPC server started, requestTopic={}", requestTopic);
     }
 
     public void stop() {
@@ -122,11 +119,12 @@ public class KafkaRpcServer implements AutoCloseable {
 
         try {
             byte[] response = handler.handle(correlationId, record.value());
-            String targetReplyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
-            if (targetReplyTopic == null || targetReplyTopic.isEmpty()) {
-                targetReplyTopic = replyTopic;
+            String replyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
+            if (replyTopic == null || replyTopic.isEmpty()) {
+                log.warn("Dropping response for correlationId={}: missing reply-topic header from client", correlationId);
+                return;
             }
-            ProducerRecord<String, byte[]> reply = new ProducerRecord<>(targetReplyTopic, record.key(), response);
+            ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, record.key(), response);
             reply.headers()
                     .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
                     .add(KafkaRpcConstants.HEADER_METHOD, (method != null ? method : "").getBytes());

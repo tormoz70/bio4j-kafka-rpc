@@ -7,3 +7,22 @@ kafka-rpc:
   server-enabled: true
   server-group-id: greeter-server
   timeout-ms: 30000
+  # Global producer/consumer (base for all clients and services)
+  producer:
+    acks: all
+  consumer:
+    group.id: greeter-client
+  # Per-client config (key = client name, e.g. greeter for Greeter service)
+  clients:
+    greeter:
+      request-topic: greeter.request
+      reply-topic: greeter.reply
+    echo:
+      request-topic: echo.request
+      reply-topic: echo.reply
+  # Per-service (server) config
+  service:
+    greeter:
+      request-topic: greeter.request
+    echo:
+      request-topic: echo.request

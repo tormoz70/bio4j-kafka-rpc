@@ -57,12 +57,13 @@ class KafkaRpcServerTest {
                     return expectedResponse;
                 });
 
-        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, REPLY_TOPIC, handlers);
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
         server.start();
 
         var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
         headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
         headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
         consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
                 org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
 
@@ -87,11 +88,12 @@ class KafkaRpcServerTest {
         var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
                 "OnlyMethod", (cid, req) -> expectedResponse);
 
-        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, REPLY_TOPIC, handlers);
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
         server.start();
 
         var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
         headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
         consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
                 org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
 
@@ -112,7 +114,7 @@ class KafkaRpcServerTest {
         var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
                 "Any", (cid, req) -> "unexpected".getBytes());
 
-        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, REPLY_TOPIC, handlers);
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
         server.start();
         Thread.sleep(200);
         server.stop();
