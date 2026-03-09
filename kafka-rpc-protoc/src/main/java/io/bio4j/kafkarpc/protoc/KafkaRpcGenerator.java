@@ -206,24 +206,38 @@ public class KafkaRpcGenerator {
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             TypeName inputType = typeName(method.getInputType(), file, javaPackage);
-            TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
 
-            // Blocking
-            MethodSpec.Builder methodBuilder = MethodSpec.methodBuilder(methodName)
-                    .addModifiers(Modifier.PUBLIC)
-                    .returns(outputType)
-                    .addParameter(ParameterSpec.builder(inputType, "request").build())
-                    .addException(IO_EXCEPTION)
-                    .addException(INVALID_PROTOCOL_BUFFER)
-                    .addException(TIMEOUT_EXCEPTION)
-                    .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                    .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                    .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                    .addStatement("byte[] response = channel.request(correlationId, request.toByteArray(), headers)")
-                    .addStatement("return $T.parseFrom(response)", outputType);
-            stub.addMethod(methodBuilder.build());
+            if (isOneway(method)) {
+                MethodSpec onewayMethod = MethodSpec.methodBuilder(methodName)
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(TypeName.VOID)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addException(IO_EXCEPTION)
+                        .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
+                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("channel.send(correlationId, request.toByteArray(), headers)")
+                        .build();
+                stub.addMethod(onewayMethod);
+            } else {
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                MethodSpec methodBuilder = MethodSpec.methodBuilder(methodName)
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(outputType)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addException(IO_EXCEPTION)
+                        .addException(INVALID_PROTOCOL_BUFFER)
+                        .addException(TIMEOUT_EXCEPTION)
+                        .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
+                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("byte[] response = channel.request(correlationId, request.toByteArray(), headers)")
+                        .addStatement("return $T.parseFrom(response)", outputType)
+                        .build();
+                stub.addMethod(methodBuilder);
+            }
         }
 
         return stub.build();
@@ -244,21 +258,35 @@ public class KafkaRpcGenerator {
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             TypeName inputType = typeName(method.getInputType(), file, javaPackage);
-            TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
 
-            TypeName futureOutputType = ParameterizedTypeName.get(COMPLETABLE_FUTURE, outputType);
-            MethodSpec asyncMethod = MethodSpec.methodBuilder(methodName + "Async")
-                    .addModifiers(Modifier.PUBLIC)
-                    .returns(futureOutputType)
-                    .addParameter(ParameterSpec.builder(inputType, "request").build())
-                    .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                    .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                    .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                    .addStatement("return channel.requestAsync(correlationId, request.toByteArray(), headers).thenApply(response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } })", outputType, INVALID_PROTOCOL_BUFFER, COMPLETION_EXCEPTION)
-                    .build();
-            asyncStub.addMethod(asyncMethod);
+            if (isOneway(method)) {
+                TypeName futureVoid = ParameterizedTypeName.get(COMPLETABLE_FUTURE, ClassName.get(Void.class));
+                MethodSpec asyncOneway = MethodSpec.methodBuilder(methodName + "Async")
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(futureVoid)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
+                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("return $T.runAsync(() -> { try { channel.send(correlationId, request.toByteArray(), headers); } catch ($T e) { throw new $T(e); } })", COMPLETABLE_FUTURE, IO_EXCEPTION, COMPLETION_EXCEPTION)
+                        .build();
+                asyncStub.addMethod(asyncOneway);
+            } else {
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName futureOutputType = ParameterizedTypeName.get(COMPLETABLE_FUTURE, outputType);
+                MethodSpec asyncMethod = MethodSpec.methodBuilder(methodName + "Async")
+                        .addModifiers(Modifier.PUBLIC)
+                        .returns(futureOutputType)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
+                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
+                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("return channel.requestAsync(correlationId, request.toByteArray(), headers).thenApply(response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } })", outputType, INVALID_PROTOCOL_BUFFER, COMPLETION_EXCEPTION)
+                        .build();
+                asyncStub.addMethod(asyncMethod);
+            }
         }
 
         return asyncStub.build();
@@ -317,7 +345,12 @@ public class KafkaRpcGenerator {
             switchBlock.add("      $T req;\n", inputType);
             switchBlock.add("      try { req = $T.parseFrom(request); }\n", inputType);
             switchBlock.add("      catch ($T e) { throw new RuntimeException(e); }\n", INVALID_PROTOCOL_BUFFER);
-            switchBlock.add("      return $L(req).toByteArray();\n", methodName);
+            if (isOneway(method)) {
+                switchBlock.add("      $L(req);\n", methodName);
+                switchBlock.add("      return null;\n");
+            } else {
+                switchBlock.add("      return $L(req).toByteArray();\n", methodName);
+            }
             switchBlock.add("    }\n");
         }
         switchBlock.add("    default -> throw new $T($S + method);\n", IllegalArgumentException.class, "Unknown method: ");
@@ -333,12 +366,21 @@ public class KafkaRpcGenerator {
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             TypeName inputType = typeName(method.getInputType(), file, javaPackage);
-            TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
-            serviceBase.addMethod(MethodSpec.methodBuilder(lowerFirst(method.getName()))
-                    .addModifiers(Modifier.PROTECTED, Modifier.ABSTRACT)
-                    .returns(outputType)
-                    .addParameter(ParameterSpec.builder(inputType, "request").build())
-                    .build());
+            String methodName = lowerFirst(method.getName());
+            if (isOneway(method)) {
+                serviceBase.addMethod(MethodSpec.methodBuilder(methodName)
+                        .addModifiers(Modifier.PROTECTED, Modifier.ABSTRACT)
+                        .returns(TypeName.VOID)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .build());
+            } else {
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                serviceBase.addMethod(MethodSpec.methodBuilder(methodName)
+                        .addModifiers(Modifier.PROTECTED, Modifier.ABSTRACT)
+                        .returns(outputType)
+                        .addParameter(ParameterSpec.builder(inputType, "request").build())
+                        .build());
+            }
         }
 
         return serviceBase.build();
@@ -371,5 +413,11 @@ public class KafkaRpcGenerator {
 
     private static String lowerFirst(String s) {
         return Character.toLowerCase(s.charAt(0)) + s.substring(1);
+    }
+
+    /** Oneway: fire-and-forget (no response). Convention: returns google.protobuf.Empty. */
+    private static boolean isOneway(DescriptorProtos.MethodDescriptorProto method) {
+        String out = method.getOutputType();
+        return "google.protobuf.Empty".equals(out) || ".google.protobuf.Empty".equals(out);
     }
 }

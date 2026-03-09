@@ -2,9 +2,13 @@ package io.bio4j.kafkarpc.example;
 
 import io.bio4j.kafkarpc.spring.KafkaRpcProperties;
 import org.springframework.stereotype.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Component
 public class GreeterServiceImpl extends GreeterKafkaRpc.ServiceBase {
+
+    private static final Logger log = LoggerFactory.getLogger(GreeterServiceImpl.class);
 
     public GreeterServiceImpl(KafkaRpcProperties properties) {
         super(properties);
@@ -22,5 +26,10 @@ public class GreeterServiceImpl extends GreeterKafkaRpc.ServiceBase {
         return SayHelloResponse.newBuilder()
                 .setReply("Echo: " + request.getMessage())
                 .build();
+    }
+
+    @Override
+    protected void notify(NotifyRequest request) {
+        log.info("Notify (oneway): event={}", request.getEvent());
     }
 }

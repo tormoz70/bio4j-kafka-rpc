@@ -98,4 +98,17 @@ class GreeterIntegrationTest {
         assertNotNull(response);
         assertEquals("Echo: async-message", response.getReply());
     }
+
+    @Test
+    void notifyOnewayCompletesWithoutException() throws Exception {
+        var request = NotifyRequest.newBuilder().setEvent("test-event").build();
+        greeterStubProvider.getStub().notify(request);
+    }
+
+    @Test
+    void notifyOnewayAsyncCompletesWithoutException() throws Exception {
+        var request = NotifyRequest.newBuilder().setEvent("async-event").build();
+        CompletableFuture<Void> future = greeterStubProvider.getAsyncStub().notifyAsync(request);
+        future.get(30, TimeUnit.SECONDS);
+    }
 }

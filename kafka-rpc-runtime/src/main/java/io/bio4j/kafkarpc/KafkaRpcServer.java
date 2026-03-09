@@ -119,6 +119,9 @@ public class KafkaRpcServer implements AutoCloseable {
 
         try {
             byte[] response = handler.handle(correlationId, record.value());
+            if (response == null) {
+                return;
+            }
             String replyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
             if (replyTopic == null || replyTopic.isEmpty()) {
                 log.warn("Dropping response for correlationId={}: missing reply-topic header from client", correlationId);

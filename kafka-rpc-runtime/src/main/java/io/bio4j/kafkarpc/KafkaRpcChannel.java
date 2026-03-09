@@ -20,6 +20,14 @@ public interface KafkaRpcChannel extends AutoCloseable {
     byte[] request(String correlationId, byte[] requestBytes, Map<String, String> headers)
             throws IOException, TimeoutException;
 
+    /**
+     * Fire-and-forget: send request without waiting for a response (oneway).
+     * Use for RPCs that return google.protobuf.Empty.
+     */
+    void send(String correlationId, byte[] requestBytes) throws IOException;
+
+    void send(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException;
+
     CompletableFuture<byte[]> requestAsync(String correlationId, byte[] requestBytes);
 
     CompletableFuture<byte[]> requestAsync(String correlationId, byte[] requestBytes, Map<String, String> headers);

@@ -3,11 +3,14 @@ syntax = "proto3";
 option java_package = "io.bio4j.kafkarpc.example";
 option java_multiple_files = true;
 
+import "google/protobuf/empty.proto";
+
 package example.greeter;
 
 service Greeter {
   rpc GetGreeting (GetGreetingRequest) returns (GetGreetingResponse);
   rpc SayHello (SayHelloRequest) returns (SayHelloResponse);
+  rpc Notify (NotifyRequest) returns (google.protobuf.Empty);
 }
 
 message GetGreetingRequest {
@@ -24,6 +27,10 @@ message SayHelloRequest {
 
 message SayHelloResponse {
   string reply = 1;
+}
+
+message NotifyRequest {
+  string event = 1;
 }
 
 // Second example service

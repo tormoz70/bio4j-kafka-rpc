@@ -112,6 +112,25 @@ public abstract class AbstractKafkaRpcChannel implements KafkaRpcChannel {
     }
 
     @Override
+    public void send(String correlationId, byte[] requestBytes) throws IOException {
+        send(correlationId, requestBytes, null);
+    }
+
+    @Override
+    public void send(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException {
+        ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
+        record.headers().add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes());
+        if (headers != null) {
+            headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes() : new byte[0]));
+        }
+        try {
+            producer.send(record).get();
+        } catch (Exception e) {
+            throw new IOException("Oneway send failed", e);
+        }
+    }
+
+    @Override
     public CompletableFuture<byte[]> requestAsync(String correlationId, byte[] requestBytes) {
         return requestAsync(correlationId, requestBytes, null);
     }
