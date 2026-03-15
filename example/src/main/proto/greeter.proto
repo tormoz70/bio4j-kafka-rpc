@@ -12,6 +12,8 @@ service Greeter {
   rpc SayHello (SayHelloRequest) returns (SayHelloResponse);
   rpc Notify (NotifyRequest) returns (google.protobuf.Empty);
   rpc StreamCount (StreamCountRequest) returns (StreamCountItem);
+  /** Scalable stream: chunks may be distributed across partitions; order not guaranteed. */
+  rpc ScalableStreamCount (StreamCountRequest) returns (StreamCountItem);
 }
 
 message GetGreetingRequest {

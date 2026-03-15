@@ -12,14 +12,17 @@ final class StreamSinkImpl implements StreamSink {
     private final String replyTopic;
     private final String correlationId;
     private final String method;
+    /** If true, all chunks use correlationId as key (one partition, ordered). If false, key is null (scalable, order not guaranteed). */
+    private final boolean ordered;
     private final AtomicBoolean ended = new AtomicBoolean(false);
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
 
-    StreamSinkImpl(Producer<String, byte[]> producer, String replyTopic, String correlationId, String method) {
+    StreamSinkImpl(Producer<String, byte[]> producer, String replyTopic, String correlationId, String method, boolean ordered) {
         this.producer = producer;
         this.replyTopic = replyTopic;
         this.correlationId = correlationId;
         this.method = method;
+        this.ordered = ordered;
     }
 
     @Override
@@ -27,7 +30,8 @@ final class StreamSinkImpl implements StreamSink {
         if (cancelled.get() || ended.get()) {
             throw new IOException("Stream already ended or cancelled");
         }
-        ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, correlationId, chunk);
+        String key = ordered ? correlationId : null;
+        ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, chunk);
         record.headers()
                 .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
                 .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes() : new byte[0]);
@@ -37,7 +41,8 @@ final class StreamSinkImpl implements StreamSink {
     @Override
     public void end() throws IOException {
         if (!ended.compareAndSet(false, true)) return;
-        ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, correlationId, new byte[0]);
+        String key = ordered ? correlationId : null;
+        ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, new byte[0]);
         record.headers()
                 .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
                 .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes() : new byte[0])

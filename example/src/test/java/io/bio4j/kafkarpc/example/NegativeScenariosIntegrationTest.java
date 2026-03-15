@@ -207,6 +207,8 @@ class NegativeScenariosIntegrationTest {
                 protected void notify(NotifyRequest request) {}
                 @Override
                 protected void streamCount(StreamCountRequest request, io.bio4j.kafkarpc.StreamSink sink) {}
+                @Override
+                protected void scalableStreamCount(StreamCountRequest request, io.bio4j.kafkarpc.StreamSink sink) {}
             };
         }
     }

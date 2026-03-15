@@ -116,6 +116,12 @@ class GreeterIntegrationTest {
 
     @Test
     void streamCountReturnsSequenceAndEnds() throws Exception {
+        streamCountOrdered_returnsSequenceInOrder();
+    }
+
+    /** Ordered stream (Stream*): all chunks go to one partition, message order preserved. */
+    @Test
+    void streamCountOrdered_returnsSequenceInOrder() throws Exception {
         var request = StreamCountRequest.newBuilder().setFrom(1).setTo(5).build();
         var values = new java.util.ArrayList<Integer>();
         var done = new java.util.concurrent.CountDownLatch(1);
@@ -128,6 +134,27 @@ class GreeterIntegrationTest {
             public void onError(Throwable error) { done.countDown(); }
         });
         assertTrue(done.await(60, java.util.concurrent.TimeUnit.SECONDS), "Stream should finish");
-        assertEquals(java.util.List.of(1, 2, 3, 4, 5), values);
+        assertEquals(java.util.List.of(1, 2, 3, 4, 5), values, "Ordered stream must deliver messages in order");
+    }
+
+    /** Scalable stream (ScalableStream*): chunks may be distributed across partitions; we only assert all items received. */
+    @Test
+    void scalableStreamCount_receivesAllItems() throws Exception {
+        var request = StreamCountRequest.newBuilder().setFrom(1).setTo(10).build();
+        var values = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
+        var done = new java.util.concurrent.CountDownLatch(1);
+        greeterStubProvider.getStub().scalableStreamCount(request, new GreeterKafkaRpc.ScalableStreamCountProcessor() {
+            @Override
+            public void onMessage(StreamCountItem item) { values.add(item.getValue()); }
+            @Override
+            public void onFinish() { done.countDown(); }
+            @Override
+            public void onError(Throwable error) { done.countDown(); }
+        });
+        assertTrue(done.await(60, java.util.concurrent.TimeUnit.SECONDS), "Stream should finish");
+        assertEquals(10, values.size(), "Should receive 10 items");
+        var sorted = new java.util.ArrayList<>(values);
+        java.util.Collections.sort(sorted);
+        assertEquals(java.util.List.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), sorted, "Scalable stream must deliver all values (order may vary)");
     }
 }

@@ -252,6 +252,7 @@ public class KafkaRpcGenerator {
                 TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
                 String processorClassName = method.getName() + "Processor";
                 ClassName processorType = ClassName.get(javaPackage, service.getName() + "KafkaRpc", processorClassName);
+                String streamOrderedValue = isOrderedStream(method) ? "true" : "false";
                 MethodSpec streamMethod = MethodSpec.methodBuilder(methodName)
                         .addModifiers(Modifier.PUBLIC)
                         .returns(TypeName.VOID)
@@ -261,6 +262,7 @@ public class KafkaRpcGenerator {
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
                         .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
                         .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("headers.put($T.HEADER_STREAM_ORDERED, $S)", KAFKA_RPC_CONSTANTS, streamOrderedValue)
                         .addStatement("channel.startStream(correlationId, request.toByteArray(), headers, new $T<byte[]>() { @Override public void onMessage(byte[] data) { try { processor.onMessage($T.parseFrom(data)); } catch ($T e) { processor.onError(e); } } @Override public void onFinish() { processor.onFinish(); } @Override public void onError($T t) { processor.onError(t); } })", STREAMING_PROCESSOR, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(Throwable.class))
                         .build();
                 stub.addMethod(streamMethod);
@@ -322,6 +324,7 @@ public class KafkaRpcGenerator {
                 ClassName processorType = ClassName.get(javaPackage, service.getName() + "KafkaRpc", processorClassName);
                 TypeName futureVoid = ParameterizedTypeName.get(COMPLETABLE_FUTURE, ClassName.get(Void.class));
                 ClassName throwable = ClassName.get(Throwable.class);
+                String streamOrderedValue = isOrderedStream(method) ? "true" : "false";
                 MethodSpec asyncStreamMethod = MethodSpec.methodBuilder(methodName + "Async")
                         .addModifiers(Modifier.PUBLIC)
                         .returns(futureVoid)
@@ -331,6 +334,7 @@ public class KafkaRpcGenerator {
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
                         .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
                         .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
+                        .addStatement("headers.put($T.HEADER_STREAM_ORDERED, $S)", KAFKA_RPC_CONSTANTS, streamOrderedValue)
                         .addStatement("$T<byte[]> rawProcessor = new $T<byte[]>() { @Override public void onMessage(byte[] data) { try { processor.onMessage($T.parseFrom(data)); } catch ($T e) { processor.onError(e); } } @Override public void onFinish() { processor.onFinish(); future.complete(null); } @Override public void onError($T t) { processor.onError(t); future.completeExceptionally(t); } }", STREAMING_PROCESSOR, STREAMING_PROCESSOR, outputType, INVALID_PROTOCOL_BUFFER, throwable)
                         .addStatement("try { channel.startStream(correlationId, request.toByteArray(), headers, rawProcessor); } catch ($T e) { future.completeExceptionally(e); }", IO_EXCEPTION)
                         .addStatement("return future")
@@ -534,8 +538,18 @@ public class KafkaRpcGenerator {
         return "google.protobuf.Empty".equals(out) || ".google.protobuf.Empty".equals(out);
     }
 
-    /** Server-streaming: client gets stream of messages. Convention: method name starts with "Stream". */
+    /** Server-streaming: client gets stream of messages. Convention: method name starts with "Stream" or "ScalableStream". */
     private static boolean isStreamMethod(DescriptorProtos.MethodDescriptorProto method) {
-        return method.getName().startsWith("Stream");
+        String name = method.getName();
+        return name.startsWith("Stream") || name.startsWith("ScalableStream");
+    }
+
+    /**
+     * Ordered stream: all chunks go to one partition (key=correlationId), message order preserved.
+     * Scalable stream: key=null, chunks may go to any partition, multiple consumers can scale; order not guaranteed.
+     * Convention: method name "ScalableStream*" = scalable; "Stream*" = ordered.
+     */
+    private static boolean isOrderedStream(DescriptorProtos.MethodDescriptorProto method) {
+        return !method.getName().startsWith("ScalableStream");
     }
 }

@@ -127,24 +127,28 @@ class StreamNegativeIntegrationTest {
             consumer.subscribe(Collections.singletonList(REQUEST_TOPIC_NEG));
             started.countDown();
 
-            var records = consumer.poll(Duration.ofSeconds(30));
-            for (ConsumerRecord<String, byte[]> record : records) {
-                String method = getHeader(record, KafkaRpcConstants.HEADER_METHOD);
-                if (method != null && method.endsWith(KafkaRpcConstants.STREAM_HEALTHCHECK_SUFFIX)) continue;
-                String correlationId = getHeader(record, KafkaRpcConstants.HEADER_CORRELATION_ID);
-                String replyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
-                String isStream = getHeader(record, KafkaRpcConstants.HEADER_IS_STREAM);
-                if (!"true".equals(isStream) || correlationId == null || replyTopic == null) continue;
+            boolean sent = false;
+            while (!sent) {
+                var records = consumer.poll(Duration.ofSeconds(5));
+                for (ConsumerRecord<String, byte[]> record : records) {
+                    String method = getHeader(record, KafkaRpcConstants.HEADER_METHOD);
+                    if (method != null && method.endsWith(KafkaRpcConstants.STREAM_HEALTHCHECK_SUFFIX)) continue;
+                    String correlationId = getHeader(record, KafkaRpcConstants.HEADER_CORRELATION_ID);
+                    String replyTopic = getHeader(record, KafkaRpcConstants.HEADER_REPLY_TOPIC);
+                    String isStream = getHeader(record, KafkaRpcConstants.HEADER_IS_STREAM);
+                    if (!"true".equals(isStream) || correlationId == null || replyTopic == null) continue;
 
-                for (int v = 1; v <= 2; v++) {
-                    byte[] chunk = StreamCountItem.newBuilder().setValue(v).build().toByteArray();
-                    var pr = new ProducerRecord<String, byte[]>(replyTopic, correlationId, chunk);
-                    pr.headers()
-                            .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
-                            .add(KafkaRpcConstants.HEADER_METHOD, "Greeter/StreamCount".getBytes());
-                    producer.send(pr);
+                    for (int v = 1; v <= 2; v++) {
+                        byte[] chunk = StreamCountItem.newBuilder().setValue(v).build().toByteArray();
+                        var pr = new ProducerRecord<String, byte[]>(replyTopic, correlationId, chunk);
+                        pr.headers()
+                                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
+                                .add(KafkaRpcConstants.HEADER_METHOD, "Greeter/StreamCount".getBytes());
+                        producer.send(pr);
+                    }
+                    sent = true;
+                    break;
                 }
-                break;
             }
         }
     }
@@ -255,6 +259,13 @@ class StreamNegativeClientDiesIntegrationTest {
                             Thread.currentThread().interrupt();
                             break;
                         }
+                    }
+                }
+                @Override
+                protected void scalableStreamCount(StreamCountRequest request, io.bio4j.kafkarpc.StreamSink sink) throws IOException {
+                    for (int i = request.getFrom(); i <= request.getTo(); i++) {
+                        if (sink.isCancelled()) break;
+                        sink.send(StreamCountItem.newBuilder().setValue(i).build().toByteArray());
                     }
                 }
             };

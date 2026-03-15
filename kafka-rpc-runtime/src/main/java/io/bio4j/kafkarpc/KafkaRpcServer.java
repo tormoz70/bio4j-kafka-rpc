@@ -231,7 +231,8 @@ public class KafkaRpcServer implements AutoCloseable {
                 log.warn("Dropping stream request correlationId={}: missing or invalid required header {}", correlationId, KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS);
                 return;
             }
-            StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method);
+            boolean streamOrdered = parseStreamOrdered(record);
+            StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method, streamOrdered);
             activeStreams.put(correlationId, new StreamContext(sink, idleTimeoutMs));
             byte[] request = record.value();
             streamExecutor.submit(() -> {
@@ -298,6 +299,12 @@ public class KafkaRpcServer implements AutoCloseable {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    /** Parses stream ordered header. Default true (ordered = one partition). "false" = scalable. */
+    private static boolean parseStreamOrdered(ConsumerRecord<String, byte[]> record) {
+        String v = getHeader(record, KafkaRpcConstants.HEADER_STREAM_ORDERED);
+        return v == null || !"false".equalsIgnoreCase(v.trim());
     }
 
     @Override

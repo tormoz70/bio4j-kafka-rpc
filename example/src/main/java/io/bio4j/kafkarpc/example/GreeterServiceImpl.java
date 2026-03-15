@@ -43,4 +43,12 @@ public class GreeterServiceImpl extends GreeterKafkaRpc.ServiceBase {
             sink.send(StreamCountItem.newBuilder().setValue(i).build().toByteArray());
         }
     }
+
+    @Override
+    protected void scalableStreamCount(StreamCountRequest request, StreamSink sink) throws IOException {
+        for (int i = request.getFrom(); i <= request.getTo(); i++) {
+            if (sink.isCancelled()) break;
+            sink.send(StreamCountItem.newBuilder().setValue(i).build().toByteArray());
+        }
+    }
 }

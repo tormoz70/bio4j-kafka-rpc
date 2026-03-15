@@ -18,6 +18,8 @@ public class KafkaRpcConstants {
     public static final String HEADER_IS_STREAM = "kafka-rpc-stream";
     /** Client sends with stream request: server idle timeout (ms). Server uses it to cancel stream when no healthcheck. */
     public static final String HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS = "kafka-rpc-stream-server-idle-timeout-ms";
+    /** Client sends with stream request: "true" = ordered (all chunks to one partition), "false" = scalable (chunks may go to any partition). Default "true". */
+    public static final String HEADER_STREAM_ORDERED = "kafka-rpc-stream-ordered";
 
     public static final String STREAM_HEALTHCHECK_SUFFIX = "/healthcheck";
 
