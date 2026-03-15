@@ -7,6 +7,10 @@ kafka-rpc:
   server-enabled: true
   server-group-id: greeter-server
   timeout-ms: 30000
+  # Number of consumer threads for request topic (server). Use > 1 to scale via partitioning. Default 1.
+  # server-consumer-count: 1
+  # Number of consumer threads for reply topic (client). Use > 1 to scale via partitioning. Default 1.
+  # client-consumer-count: 1
   # Global producer/consumer (base for all clients and services)
   producer:
     acks: all
@@ -17,6 +21,7 @@ kafka-rpc:
     greeter:
       request-topic: greeter.request
       reply-topic: greeter.reply
+      # consumer-count: 1  # override global client-consumer-count for this client
     echo:
       request-topic: echo.request
       reply-topic: echo.reply
@@ -24,5 +29,6 @@ kafka-rpc:
   service:
     greeter:
       request-topic: greeter.request
+      # consumer-count: 1  # override global server-consumer-count for this service
     echo:
       request-topic: echo.request

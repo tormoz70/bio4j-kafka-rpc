@@ -25,6 +25,9 @@ public class KafkaRpcProperties {
     /** Default consumer group ID prefix for server. */
     private String serverGroupId = "kafka-rpc-server";
 
+    /** Number of consumer threads for server (request topic). Enables scaling via partitioning. Default 1. */
+    private int serverConsumerCount = 1;
+
     /** Default request timeout in milliseconds (client). */
     private int timeoutMs = 30_000;
 
@@ -242,6 +245,31 @@ public class KafkaRpcProperties {
         return streamServerIdleTimeoutMs != null ? streamServerIdleTimeoutMs : KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
     }
 
+    /** Number of consumer threads for server (request topic) for this service. Uses service override or global serverConsumerCount. */
+    public int getServerConsumerCountForService(String serviceName) {
+        if (serviceName != null && service != null) {
+            var svc = service.get(serviceName);
+            if (svc != null && svc.getConsumerCount() != null) {
+                return Math.max(1, svc.getConsumerCount());
+            }
+        }
+        return Math.max(1, serverConsumerCount);
+    }
+
+    /** Number of consumer threads for client (reply topic) for this client. Uses client override or global default. */
+    public int getClientConsumerCountForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getConsumerCount() != null) {
+                return Math.max(1, c.getConsumerCount());
+            }
+        }
+        return Math.max(1, clientConsumerCount);
+    }
+
+    /** Default number of consumer threads for client (reply topic). Enables scaling via partitioning. Default 1. */
+    private int clientConsumerCount = 1;
+
     @Data
     public static class Client {
         private String requestTopic;
@@ -256,6 +284,8 @@ public class KafkaRpcProperties {
         private Integer streamHealthcheckTimeoutMs;
         /** Stream server idle timeout (ms). Sent in stream request header; server cancels stream after no healthcheck. Override global kafka-rpc.stream-server-idle-timeout-ms. */
         private Integer streamServerIdleTimeoutMs;
+        /** Number of consumer threads for reply topic. Override global kafka-rpc.client-consumer-count. */
+        private Integer consumerCount;
         /** Per-client producer overrides (on top of global kafka-rpc.producer). */
         private Map<String, String> producer = new HashMap<>();
         /** Per-client consumer overrides (on top of global kafka-rpc.consumer). */
@@ -265,6 +295,8 @@ public class KafkaRpcProperties {
     @Data
     public static class Service {
         private String requestTopic;
+        /** Number of consumer threads for request topic. Override global kafka-rpc.server-consumer-count. */
+        private Integer consumerCount;
         /** Per-service producer overrides (on top of global kafka-rpc.producer). */
         private Map<String, String> producer = new HashMap<>();
         /** Per-service consumer overrides (on top of global kafka-rpc.consumer). */

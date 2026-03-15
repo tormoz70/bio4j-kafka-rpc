@@ -14,7 +14,9 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
@@ -22,18 +24,18 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Server that consumes requests from a Kafka topic and dispatches to handlers. */
+/** Server that consumes requests from a Kafka topic and dispatches to handlers. Supports multiple consumers (same group) for scaling via partitioning. */
 @Slf4j
 public class KafkaRpcServer implements AutoCloseable {
 
-    private final Consumer<String, byte[]> consumer;
+    private final List<Consumer<String, byte[]>> consumers;
     private final Producer<String, byte[]> producer;
     private final String requestTopic;
     private final Map<String, MethodHandler> handlers;
     private final Map<String, StreamMethodHandler> streamHandlers;
     private final ConcurrentHashMap<String, StreamContext> activeStreams = new ConcurrentHashMap<>();
     private final AtomicBoolean running = new AtomicBoolean(true);
-    private Thread consumerThread;
+    private final List<Thread> consumerThreads = new ArrayList<>();
     private Thread streamIdleThread;
     private final ExecutorService streamExecutor = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "kafka-rpc-stream-handler");
@@ -66,22 +68,40 @@ public class KafkaRpcServer implements AutoCloseable {
     public KafkaRpcServer(Properties consumerConfig, Properties producerConfig,
                           String requestTopic,
                           Map<String, MethodHandler> handlers) {
-        this(consumerConfig, producerConfig, requestTopic, handlers, Map.of());
+        this(consumerConfig, producerConfig, requestTopic, handlers, Map.of(), 1);
     }
 
     public KafkaRpcServer(Properties consumerConfig, Properties producerConfig,
                           String requestTopic,
                           Map<String, MethodHandler> handlers,
                           Map<String, StreamMethodHandler> streamHandlers) {
+        this(consumerConfig, producerConfig, requestTopic, handlers, streamHandlers, 1);
+    }
+
+    /**
+     * @param consumerCount number of consumer threads (same consumer group). Use &gt; 1 to scale via topic partitioning.
+     */
+    public KafkaRpcServer(Properties consumerConfig, Properties producerConfig,
+                          String requestTopic,
+                          Map<String, MethodHandler> handlers,
+                          Map<String, StreamMethodHandler> streamHandlers,
+                          int consumerCount) {
         this.requestTopic = requestTopic;
         this.handlers = Map.copyOf(handlers);
         this.streamHandlers = streamHandlers != null ? Map.copyOf(streamHandlers) : Map.of();
 
-        Properties cons = new Properties();
-        cons.putAll(consumerConfig);
-        cons.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
-        cons.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
-        this.consumer = new KafkaConsumer<>(cons);
+        Properties consBase = new Properties();
+        consBase.putAll(consumerConfig);
+        consBase.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
+        consBase.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
+        int count = Math.max(1, consumerCount);
+        List<Consumer<String, byte[]>> list = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            Properties cons = new Properties();
+            cons.putAll(consBase);
+            list.add(new KafkaConsumer<>(cons));
+        }
+        this.consumers = Collections.unmodifiableList(list);
 
         Properties prod = new Properties();
         prod.putAll(producerConfig);
@@ -99,7 +119,7 @@ public class KafkaRpcServer implements AutoCloseable {
     KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
                    String requestTopic, Map<String, MethodHandler> handlers,
                    Map<String, StreamMethodHandler> streamHandlers) {
-        this.consumer = consumer;
+        this.consumers = Collections.singletonList(consumer);
         this.producer = producer;
         this.requestTopic = requestTopic;
         this.handlers = Map.copyOf(handlers);
@@ -107,10 +127,15 @@ public class KafkaRpcServer implements AutoCloseable {
     }
 
     public void start() {
-        consumer.subscribe(Collections.singletonList(requestTopic));
-        consumerThread = Thread.ofVirtual().name("kafka-rpc-server").start(this::run);
+        for (int i = 0; i < consumers.size(); i++) {
+            Consumer<String, byte[]> c = consumers.get(i);
+            c.subscribe(Collections.singletonList(requestTopic));
+            final int index = i;
+            Thread t = Thread.ofVirtual().name("kafka-rpc-server-" + index).start(() -> run(c));
+            consumerThreads.add(t);
+        }
         streamIdleThread = Thread.ofVirtual().name("kafka-rpc-stream-idle").start(this::runStreamIdleCheck);
-        log.info("Kafka RPC server started, requestTopic={}", requestTopic);
+        log.info("Kafka RPC server started, requestTopic={}, consumerCount={}", requestTopic, consumers.size());
     }
 
     private void runStreamIdleCheck() {
@@ -119,7 +144,7 @@ public class KafkaRpcServer implements AutoCloseable {
                 Thread.sleep(2000);
                 long now = System.currentTimeMillis();
                 activeStreams.forEach((streamId, ctx) -> {
-                    if (now - ctx.lastHealthcheckTime > ctx.idleTimeoutMs) {
+                    if (now - ctx.lastHealthcheckTime >= ctx.idleTimeoutMs) {
                         log.info("Stream {} idle timeout, cancelling", streamId);
                         ctx.sink.cancel();
                         activeStreams.remove(streamId);
@@ -134,21 +159,23 @@ public class KafkaRpcServer implements AutoCloseable {
 
     public void stop() {
         running.set(false);
-        consumer.wakeup();
+        for (Consumer<String, byte[]> c : consumers) {
+            c.wakeup();
+        }
         if (streamIdleThread != null) {
             streamIdleThread.interrupt();
         }
         streamExecutor.shutdown();
-        if (consumerThread != null) {
+        for (Thread t : consumerThreads) {
             try {
-                consumerThread.join(5000);
+                t.join(5000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
     }
 
-    private void run() {
+    private void run(Consumer<String, byte[]> consumer) {
         while (running.get()) {
             try {
                 ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(500));
@@ -276,7 +303,9 @@ public class KafkaRpcServer implements AutoCloseable {
     @Override
     public void close() {
         stop();
-        consumer.close();
+        for (Consumer<String, byte[]> c : consumers) {
+            c.close();
+        }
         producer.close();
     }
 }

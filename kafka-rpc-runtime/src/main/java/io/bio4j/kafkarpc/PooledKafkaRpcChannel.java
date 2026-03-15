@@ -13,8 +13,10 @@ import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.BlockingQueue;
@@ -25,8 +27,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Shared channel: one producer + one consumer thread per instance. Dispatches replies by correlationId
- * to waiting callers. Used by the channel pool (one per client name).
+ * Shared channel: one producer + one or more consumer threads per instance (same consumer group for reply topic).
+ * Dispatches replies by correlationId to waiting callers. Used by the channel pool (one per client name).
+ * Multiple consumers enable scaling via partitioning of the reply topic.
  */
 @Slf4j
 public class PooledKafkaRpcChannel implements KafkaRpcChannel {
@@ -42,14 +45,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final ConcurrentHashMap<String, CompletableFuture<byte[]>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BlockingQueue<StreamChunk>> streamQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
-    private final Thread consumerThread;
+    private final List<Thread> consumerThreads = new ArrayList<>();
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
                                  String requestTopic, String replyTopic, int timeoutMs) {
         this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, true,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
-                KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS);
+                KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS, 1);
     }
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
@@ -58,7 +61,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
-                KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS);
+                KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS, 1);
     }
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
@@ -66,6 +69,19 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                  boolean streamHealthcheckEnabled,
                                  int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
                                  long streamServerIdleTimeoutMs) {
+        this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamServerIdleTimeoutMs, 1);
+    }
+
+    /**
+     * @param consumerCount number of consumer threads for reply topic (same consumer group). Use &gt; 1 to scale via partitioning.
+     */
+    public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
+                                 String requestTopic, String replyTopic, int timeoutMs,
+                                 boolean streamHealthcheckEnabled,
+                                 int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
+                                 long streamServerIdleTimeoutMs,
+                                 int consumerCount) {
         this.requestTopic = requestTopic;
         this.replyTopic = replyTopic;
         this.timeoutMs = timeoutMs;
@@ -80,14 +96,20 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         prod.putIfAbsent("value.serializer", ByteArraySerializer.class.getName());
         this.producer = new KafkaProducer<>(prod);
 
-        Properties cons = new Properties();
-        cons.putAll(consumerConfig);
-        cons.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
-        cons.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
-        KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(cons);
-        consumer.subscribe(Collections.singletonList(replyTopic));
-
-        this.consumerThread = Thread.ofVirtual().name("kafka-rpc-pool-" + replyTopic).start(() -> runConsumer(consumer));
+        Properties consBase = new Properties();
+        consBase.putAll(consumerConfig);
+        consBase.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
+        consBase.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
+        int count = Math.max(1, consumerCount);
+        for (int i = 0; i < count; i++) {
+            Properties cons = new Properties();
+            cons.putAll(consBase);
+            KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(cons);
+            consumer.subscribe(Collections.singletonList(replyTopic));
+            final int index = i;
+            Thread t = Thread.ofVirtual().name("kafka-rpc-pool-" + replyTopic + "-" + index).start(() -> runConsumer(consumer));
+            consumerThreads.add(t);
+        }
     }
 
     private void runConsumer(KafkaConsumer<String, byte[]> consumer) {
@@ -238,7 +260,9 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     public void close() {
         if (closed.compareAndSet(false, true)) {
             producer.close();
-            consumerThread.interrupt();
+            for (Thread t : consumerThreads) {
+                t.interrupt();
+            }
         }
     }
 }

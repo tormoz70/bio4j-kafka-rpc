@@ -44,12 +44,14 @@ public class KafkaRpcServerAutoConfiguration {
                 var consumerConfig = properties.getConsumerPropertiesForServer(serviceName);
                 var producerConfig = properties.getProducerPropertiesForServer(serviceName);
                 consumerConfig.put("group.id", properties.getServerGroupId() + "-" + service.getRequestTopic());
+                int consumerCount = properties.getServerConsumerCountForService(serviceName);
 
                 var server = new KafkaRpcServer(
                         consumerConfig, producerConfig,
                         service.getRequestTopic(),
                         service.getHandlers(),
-                        service.getStreamHandlers());
+                        service.getStreamHandlers(),
+                        consumerCount);
                 servers.add(server);
                 server.start();
                 log.info("Started Kafka RPC server for {} (service {})", service.getRequestTopic(), serviceName);
