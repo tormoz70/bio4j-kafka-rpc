@@ -19,19 +19,16 @@ final class StreamingCallImpl {
     private final int healthcheckIntervalMs;
     private final int healthcheckTimeoutMs;
     private final StreamingProcessor<byte[]> processor;
+    private final Runnable onClose;
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final AtomicLong healthcheckSeq = new AtomicLong(0);
     private Thread healthcheckThread;
     private Thread drainThread;
-    private volatile Runnable onClose;
-
-    void setOnClose(Runnable onClose) {
-        this.onClose = onClose;
-    }
 
     StreamingCallImpl(String streamId, BlockingQueue<StreamChunk> queue, KafkaRpcChannel channel,
                       String method, int healthcheckIntervalMs, int healthcheckTimeoutMs,
-                      boolean enableHealthcheck, StreamingProcessor<byte[]> processor) {
+                      boolean enableHealthcheck, StreamingProcessor<byte[]> processor,
+                      Runnable onClose) {
         this.streamId = streamId;
         this.queue = queue;
         this.channel = channel;
@@ -39,6 +36,7 @@ final class StreamingCallImpl {
         this.healthcheckIntervalMs = healthcheckIntervalMs;
         this.healthcheckTimeoutMs = healthcheckTimeoutMs;
         this.processor = processor;
+        this.onClose = onClose;
         if (enableHealthcheck) {
             this.healthcheckThread = Thread.ofVirtual().name("stream-hc-" + streamId).start(this::runHealthcheck);
         }

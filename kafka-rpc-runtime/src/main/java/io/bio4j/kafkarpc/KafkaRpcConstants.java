@@ -1,14 +1,18 @@
 package io.bio4j.kafkarpc;
 
 import lombok.experimental.UtilityClass;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 
-/** Header names and conventions for Kafka RPC. */
+import java.nio.charset.StandardCharsets;
+
+/** Header names, conventions, and utilities for Kafka RPC. */
 @UtilityClass
 public class KafkaRpcConstants {
 
     public static final String HEADER_CORRELATION_ID = "kafka-rpc-correlation-id";
     public static final String HEADER_METHOD = "kafka-rpc-method";
     public static final String HEADER_REPLY_TOPIC = "kafka-rpc-reply-topic";
+    public static final String HEADER_ERROR = "kafka-rpc-error";
 
     /** Client sends with stream request; server sends on last chunk. */
     public static final String HEADER_STREAM_END = "kafka-rpc-stream-end";
@@ -30,4 +34,17 @@ public class KafkaRpcConstants {
     public static final int DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS = 15_000;
     /** Default for stream-server-idle-timeout (ms). Client-only: used when not set in config; server requires header. */
     public static final int DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS = 20_000;
+
+    public static final int DEFAULT_POLL_INTERVAL_MS = 100;
+    public static final int DEFAULT_STREAM_BUFFER_SIZE = 1024;
+
+    /** Extract a string header value from a Kafka consumer record. Returns null if missing or empty. */
+    public static String getHeader(ConsumerRecord<String, byte[]> record, String name) {
+        var iter = record.headers().headers(name).iterator();
+        if (iter.hasNext()) {
+            byte[] v = iter.next().value();
+            return v != null && v.length > 0 ? new String(v, StandardCharsets.UTF_8) : null;
+        }
+        return null;
+    }
 }

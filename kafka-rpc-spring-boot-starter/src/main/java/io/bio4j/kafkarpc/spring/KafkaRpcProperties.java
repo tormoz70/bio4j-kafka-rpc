@@ -38,6 +38,12 @@ public class KafkaRpcProperties {
     /** Default stream server idle timeout (ms). Client sends in stream request header; overridable per client. */
     private Integer streamServerIdleTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
 
+    /** Kafka consumer poll interval (ms). Lower values reduce latency at the cost of CPU. Default 100ms. */
+    private int pollIntervalMs = KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS;
+
+    /** Maximum buffered stream chunks on the client side. Provides backpressure when the consumer is slow. Default 1024. */
+    private int streamBufferSize = KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE;
+
     /**
      * Per-client config. Key = client name (e.g. greeter). Used by generated *RpcChannel.
      * Each client inherits global producer/consumer and can override.
@@ -58,6 +64,9 @@ public class KafkaRpcProperties {
      * Global Kafka consumer overrides. Base for all clients and servers; per-client/per-service maps are applied on top.
      */
     private Map<String, String> consumer = new HashMap<>();
+
+    /** Default number of consumer threads for client (reply topic). Enables scaling via partitioning. Default 1. */
+    private int clientConsumerCount = 1;
 
     /**
      * Build producer Properties for a client: global base + client overrides.
@@ -267,8 +276,27 @@ public class KafkaRpcProperties {
         return Math.max(1, clientConsumerCount);
     }
 
-    /** Default number of consumer threads for client (reply topic). Enables scaling via partitioning. Default 1. */
-    private int clientConsumerCount = 1;
+    /** Poll interval for this client (ms). Uses client override or global default. */
+    public int getPollIntervalMsForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getPollIntervalMs() != null) {
+                return c.getPollIntervalMs();
+            }
+        }
+        return pollIntervalMs;
+    }
+
+    /** Stream buffer size for this client. Uses client override or global default. */
+    public int getStreamBufferSizeForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getStreamBufferSize() != null) {
+                return c.getStreamBufferSize();
+            }
+        }
+        return streamBufferSize;
+    }
 
     @Data
     public static class Client {
@@ -286,6 +314,10 @@ public class KafkaRpcProperties {
         private Integer streamServerIdleTimeoutMs;
         /** Number of consumer threads for reply topic. Override global kafka-rpc.client-consumer-count. */
         private Integer consumerCount;
+        /** Consumer poll interval (ms). Override global kafka-rpc.poll-interval-ms. */
+        private Integer pollIntervalMs;
+        /** Maximum buffered stream chunks. Override global kafka-rpc.stream-buffer-size. */
+        private Integer streamBufferSize;
         /** Per-client producer overrides (on top of global kafka-rpc.producer). */
         private Map<String, String> producer = new HashMap<>();
         /** Per-client consumer overrides (on top of global kafka-rpc.consumer). */
@@ -297,6 +329,8 @@ public class KafkaRpcProperties {
         private String requestTopic;
         /** Number of consumer threads for request topic. Override global kafka-rpc.server-consumer-count. */
         private Integer consumerCount;
+        /** Consumer poll interval (ms). Override global kafka-rpc.poll-interval-ms. */
+        private Integer pollIntervalMs;
         /** Per-service producer overrides (on top of global kafka-rpc.producer). */
         private Map<String, String> producer = new HashMap<>();
         /** Per-service consumer overrides (on top of global kafka-rpc.consumer). */

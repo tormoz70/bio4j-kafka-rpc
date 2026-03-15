@@ -54,7 +54,8 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("integration")
 @TestPropertySource(properties = {
         "kafka-rpc.clients.greeter-neg.request-topic=greeter.request.neg",
-        "kafka-rpc.clients.greeter-neg.reply-topic=greeter.reply.neg"
+        "kafka-rpc.clients.greeter-neg.reply-topic=greeter.reply.neg",
+        "kafka-rpc.clients.greeter-neg.consumer.auto.offset.reset=earliest"
 })
 class StreamNegativeIntegrationTest {
 
@@ -184,7 +185,10 @@ class StreamNegativeClientDiesIntegrationTest {
 
     @SpringBootApplication
     @ComponentScan(basePackageClasses = KafkaRpcExampleApplication.class,
-            excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = GreeterServiceImpl.class))
+            excludeFilters = {
+                    @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = GreeterServiceImpl.class),
+                    @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*IntegrationTest\\$.*")
+            })
     static class TestApp {
         public static void main(String[] args) {
             SpringApplication.run(TestApp.class, args);

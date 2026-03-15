@@ -14,6 +14,7 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
@@ -21,7 +22,11 @@ import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
 
-/** Single-use channel: one producer + one consumer per instance. Subclass for generated *RpcChannel. */
+/**
+ * Single-use channel: one producer + one consumer per instance. Subclass for generated *RpcChannel.
+ * @deprecated Use {@link PooledKafkaRpcChannel} for better resource utilization and streaming support.
+ */
+@Deprecated
 @Slf4j
 public abstract class AbstractKafkaRpcChannel implements KafkaRpcChannel {
 
@@ -90,20 +95,24 @@ public abstract class AbstractKafkaRpcChannel implements KafkaRpcChannel {
             throws IOException, TimeoutException {
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
         record.headers()
-                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
-                .add(KafkaRpcConstants.HEADER_REPLY_TOPIC, replyTopic.getBytes());
+                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
+                .add(KafkaRpcConstants.HEADER_REPLY_TOPIC, replyTopic.getBytes(StandardCharsets.UTF_8));
         if (headers != null) {
-            headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes() : new byte[0]));
+            headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
         }
 
         producer.send(record);
 
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline) {
-            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(500));
+            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS));
             for (ConsumerRecord<String, byte[]> r : records) {
-                String recvCorrelationId = getHeader(r, KafkaRpcConstants.HEADER_CORRELATION_ID);
+                String recvCorrelationId = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_CORRELATION_ID);
                 if (correlationId.equals(recvCorrelationId)) {
+                    String errorMsg = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_ERROR);
+                    if (errorMsg != null) {
+                        throw new IOException("Server error: " + errorMsg);
+                    }
                     return r.value();
                 }
             }
@@ -119,9 +128,9 @@ public abstract class AbstractKafkaRpcChannel implements KafkaRpcChannel {
     @Override
     public void send(String correlationId, byte[] requestBytes, Map<String, String> headers) throws IOException {
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
-        record.headers().add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes());
+        record.headers().add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8));
         if (headers != null) {
-            headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes() : new byte[0]));
+            headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
         }
         try {
             producer.send(record).get();
@@ -154,18 +163,9 @@ public abstract class AbstractKafkaRpcChannel implements KafkaRpcChannel {
     public void sendReply(String correlationId, byte[] responseBytes, String method) {
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, correlationId, responseBytes);
         record.headers()
-                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
-                .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes() : new byte[0]);
+                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
+                .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes(StandardCharsets.UTF_8) : new byte[0]);
         producer.send(record);
-    }
-
-    private static String getHeader(ConsumerRecord<String, byte[]> record, String name) {
-        var iter = record.headers().headers(name).iterator();
-        if (iter.hasNext()) {
-            byte[] v = iter.next().value();
-            return v != null ? new String(v) : null;
-        }
-        return null;
     }
 
     @Override

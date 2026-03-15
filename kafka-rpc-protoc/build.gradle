@@ -6,6 +6,12 @@ dependencies {
     implementation "com.google.protobuf:protobuf-java:${rootProject.ext.protobufVersion}"
     implementation "com.squareup:javapoet:1.13.0"
     implementation project(':kafka-rpc-runtime')
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 shadowJar {

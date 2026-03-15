@@ -52,16 +52,15 @@ class NegativeScenariosIntegrationTest {
 
             Exception thrown = assertThrows(Exception.class, () -> stub.getGreeting(request));
 
+            String msg = thrown.getMessage() != null ? thrown.getMessage() : "";
+            String causeMsg = thrown.getCause() != null && thrown.getCause().getMessage() != null ? thrown.getCause().getMessage() : "";
+            String causeName = thrown.getCause() != null ? thrown.getCause().getClass().getName() : "";
             assertTrue(
-                    thrown.getMessage() != null && thrown.getMessage().contains("response")
-                            || (thrown.getCause() != null && (
-                            thrown.getCause().getClass().getName().contains("Kafka")
-                                    || thrown.getCause().getMessage() != null && (
-                                    thrown.getCause().getMessage().contains("timeout")
-                                            || thrown.getCause().getMessage().contains("Connection")
-                                            || thrown.getCause().getMessage().contains("metadata")
-                            ))),
-                    "Expected timeout or Kafka/connection error: " + thrown
+                    msg.contains("response") || msg.contains("Failed to send")
+                            || causeName.contains("Kafka")
+                            || causeMsg.contains("timeout") || causeMsg.contains("Connection")
+                            || causeMsg.contains("metadata") || causeMsg.contains("Failed to send"),
+                    "Expected timeout, Kafka/connection, or send error: " + thrown
             );
         }
     }
@@ -99,8 +98,9 @@ class NegativeScenariosIntegrationTest {
             assertNotNull(thrown.getMessage());
             assertTrue(
                     thrown.getMessage().contains("response") || thrown.getMessage().contains("timeout")
+                            || thrown.getMessage().contains("Failed to send")
                             || (thrown.getCause() != null && thrown.getCause().getClass().getName().contains("Kafka")),
-                    "Expected timeout or Kafka error: " + thrown
+                    "Expected timeout, Kafka, or send error: " + thrown
             );
         }
     }
@@ -144,7 +144,7 @@ class NegativeScenariosIntegrationTest {
     }
 
     /**
-     * 4. Server throws when processing request. Client should not get a response (timeout or error).
+     * 4. Server throws when processing request. Client should receive an error reply (IOException with server error).
      */
     @SpringBootTest(classes = {ServerErrorApp.class, ServerErrorConfig.class}, webEnvironment = SpringBootTest.WebEnvironment.NONE)
     @EmbeddedKafka(
@@ -163,23 +163,28 @@ class NegativeScenariosIntegrationTest {
         private KafkaRpcChannelPool channelPool;
 
         @Test
-        void whenServerThrows_clientGetsNoResponse() {
+        void whenServerThrows_clientGetsErrorReply() {
             var stub = new GreeterKafkaRpc.Stub(channelPool.getOrCreate("greeter"));
             var request = GetGreetingRequest.newBuilder().setName("fail").build();
 
             Exception thrown = assertThrows(Exception.class, () -> stub.getGreeting(request));
 
+            String fullMessage = thrown.getMessage() + (thrown.getCause() != null ? " " + thrown.getCause().getMessage() : "");
             assertTrue(
-                    thrown instanceof java.util.concurrent.TimeoutException
-                            || (thrown.getMessage() != null && thrown.getMessage().toLowerCase().contains("response")),
-                    "Expected timeout or no response: " + thrown
+                    fullMessage.toLowerCase().contains("server error")
+                            || fullMessage.contains("Simulated server error")
+                            || thrown instanceof java.util.concurrent.TimeoutException,
+                    "Expected server error propagated to client: " + thrown
             );
         }
     }
 
     @SpringBootApplication
     @ComponentScan(basePackageClasses = KafkaRpcExampleApplication.class,
-            excludeFilters = @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = GreeterServiceImpl.class))
+            excludeFilters = {
+                    @ComponentScan.Filter(type = FilterType.ASSIGNABLE_TYPE, classes = GreeterServiceImpl.class),
+                    @ComponentScan.Filter(type = FilterType.REGEX, pattern = ".*IntegrationTest\\$.*")
+            })
     static class ServerErrorApp {
         public static void main(String[] args) {
             SpringApplication.run(ServerErrorApp.class, args);

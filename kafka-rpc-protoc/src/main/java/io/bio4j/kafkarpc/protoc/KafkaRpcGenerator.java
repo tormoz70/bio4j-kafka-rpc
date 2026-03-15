@@ -122,22 +122,18 @@ public class KafkaRpcGenerator {
                         .addModifiers(Modifier.PRIVATE)
                         .build());
 
-        // Processor inner classes for each stream method
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             if (isStreamMethod(method)) {
                 mainType.addType(buildStreamProcessorClass(method, file, javaPackage));
             }
         }
 
-        // Stub inner class
         TypeSpec stubType = buildStubClass(file, service, javaPackage);
         mainType.addType(stubType);
 
-        // AsyncStub inner class
         TypeSpec asyncStubType = buildAsyncStubClass(file, service, javaPackage);
         mainType.addType(asyncStubType);
 
-        // ServiceBase inner class
         TypeSpec serviceBaseType = buildServiceBaseClass(file, service, javaPackage);
         mainType.addType(serviceBaseType);
 
@@ -158,7 +154,8 @@ public class KafkaRpcGenerator {
         TypeSpec channelType = TypeSpec.classBuilder(channelClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
                 .superclass(ABSTRACT_KAFKA_RPC_CHANNEL)
-                .addJavadoc("Channel for $L service. Config from application.yml (kafka-rpc.clients.$L).", service.getName(), clientName)
+                .addAnnotation(AnnotationSpec.builder(ClassName.get(Deprecated.class)).build())
+                .addJavadoc("Channel for $L service. Config from application.yml (kafka-rpc.clients.$L).\n@deprecated Use {@link $T} via pool instead.", service.getName(), clientName, ClassName.get("io.bio4j.kafkarpc", "PooledKafkaRpcChannel"))
                 .addMethod(ctor)
                 .build();
         return JavaFile.builder(outPkg, channelType)
@@ -243,9 +240,7 @@ public class KafkaRpcGenerator {
                         .addParameter(ParameterSpec.builder(inputType, "request").build())
                         .addException(IO_EXCEPTION)
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("channel.send(correlationId, request.toByteArray(), headers)")
+                        .addStatement("channel.send(correlationId, request.toByteArray(), $T.of($T.HEADER_METHOD, $S))", MAP, KAFKA_RPC_CONSTANTS, fullMethod)
                         .build();
                 stub.addMethod(onewayMethod);
             } else if (isStreamMethod(method)) {
@@ -260,9 +255,7 @@ public class KafkaRpcGenerator {
                         .addParameter(ParameterSpec.builder(processorType, "processor").build())
                         .addException(IO_EXCEPTION)
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("headers.put($T.HEADER_STREAM_ORDERED, $S)", KAFKA_RPC_CONSTANTS, streamOrderedValue)
+                        .addStatement("$T<String, String> headers = $T.of($T.HEADER_METHOD, $S, $T.HEADER_STREAM_ORDERED, $S)", MAP, MAP, KAFKA_RPC_CONSTANTS, fullMethod, KAFKA_RPC_CONSTANTS, streamOrderedValue)
                         .addStatement("channel.startStream(correlationId, request.toByteArray(), headers, new $T<byte[]>() { @Override public void onMessage(byte[] data) { try { processor.onMessage($T.parseFrom(data)); } catch ($T e) { processor.onError(e); } } @Override public void onFinish() { processor.onFinish(); } @Override public void onError($T t) { processor.onError(t); } })", STREAMING_PROCESSOR, outputType, INVALID_PROTOCOL_BUFFER, ClassName.get(Throwable.class))
                         .build();
                 stub.addMethod(streamMethod);
@@ -276,9 +269,7 @@ public class KafkaRpcGenerator {
                         .addException(INVALID_PROTOCOL_BUFFER)
                         .addException(TIMEOUT_EXCEPTION)
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("byte[] response = channel.request(correlationId, request.toByteArray(), headers)")
+                        .addStatement("byte[] response = channel.request(correlationId, request.toByteArray(), $T.of($T.HEADER_METHOD, $S))", MAP, KAFKA_RPC_CONSTANTS, fullMethod)
                         .addStatement("return $T.parseFrom(response)", outputType)
                         .build();
                 stub.addMethod(methodBuilder);
@@ -313,9 +304,7 @@ public class KafkaRpcGenerator {
                         .returns(futureVoid)
                         .addParameter(ParameterSpec.builder(inputType, "request").build())
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("return $T.runAsync(() -> { try { channel.send(correlationId, request.toByteArray(), headers); } catch ($T e) { throw new $T(e); } })", COMPLETABLE_FUTURE, IO_EXCEPTION, COMPLETION_EXCEPTION)
+                        .addStatement("return $T.runAsync(() -> { try { channel.send(correlationId, request.toByteArray(), $T.of($T.HEADER_METHOD, $S)); } catch ($T e) { throw new $T(e); } })", COMPLETABLE_FUTURE, MAP, KAFKA_RPC_CONSTANTS, fullMethod, IO_EXCEPTION, COMPLETION_EXCEPTION)
                         .build();
                 asyncStub.addMethod(asyncOneway);
             } else if (isStreamMethod(method)) {
@@ -332,9 +321,7 @@ public class KafkaRpcGenerator {
                         .addParameter(ParameterSpec.builder(processorType, "processor").build())
                         .addStatement("$T<Void> future = new $T<>()", COMPLETABLE_FUTURE, COMPLETABLE_FUTURE)
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("headers.put($T.HEADER_STREAM_ORDERED, $S)", KAFKA_RPC_CONSTANTS, streamOrderedValue)
+                        .addStatement("$T<String, String> headers = $T.of($T.HEADER_METHOD, $S, $T.HEADER_STREAM_ORDERED, $S)", MAP, MAP, KAFKA_RPC_CONSTANTS, fullMethod, KAFKA_RPC_CONSTANTS, streamOrderedValue)
                         .addStatement("$T<byte[]> rawProcessor = new $T<byte[]>() { @Override public void onMessage(byte[] data) { try { processor.onMessage($T.parseFrom(data)); } catch ($T e) { processor.onError(e); } } @Override public void onFinish() { processor.onFinish(); future.complete(null); } @Override public void onError($T t) { processor.onError(t); future.completeExceptionally(t); } }", STREAMING_PROCESSOR, STREAMING_PROCESSOR, outputType, INVALID_PROTOCOL_BUFFER, throwable)
                         .addStatement("try { channel.startStream(correlationId, request.toByteArray(), headers, rawProcessor); } catch ($T e) { future.completeExceptionally(e); }", IO_EXCEPTION)
                         .addStatement("return future")
@@ -348,9 +335,7 @@ public class KafkaRpcGenerator {
                         .returns(futureOutputType)
                         .addParameter(ParameterSpec.builder(inputType, "request").build())
                         .addStatement("String correlationId = $T.randomUUID().toString()", UUID)
-                        .addStatement("$T<String, String> headers = new $T<>()", MAP, HASH_MAP)
-                        .addStatement("headers.put($T.HEADER_METHOD, $S)", KAFKA_RPC_CONSTANTS, fullMethod)
-                        .addStatement("return channel.requestAsync(correlationId, request.toByteArray(), headers).thenApply(response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } })", outputType, INVALID_PROTOCOL_BUFFER, COMPLETION_EXCEPTION)
+                        .addStatement("return channel.requestAsync(correlationId, request.toByteArray(), $T.of($T.HEADER_METHOD, $S)).thenApply(response -> { try { return $T.parseFrom(response); } catch ($T e) { throw new $T(e); } })", MAP, KAFKA_RPC_CONSTANTS, fullMethod, outputType, INVALID_PROTOCOL_BUFFER, COMPLETION_EXCEPTION)
                         .build();
                 asyncStub.addMethod(asyncMethod);
             }
@@ -401,7 +386,6 @@ public class KafkaRpcGenerator {
         getHandlers.addStatement("return m");
         serviceBase.addMethod(getHandlers.build());
 
-        // getHandler(String method) with switch (non-stream only)
         CodeBlock.Builder switchBlock = CodeBlock.builder()
                 .add("return (correlationId, request) -> {\n")
                 .add("  switch (method) {\n");
@@ -433,7 +417,6 @@ public class KafkaRpcGenerator {
                 .addCode(switchBlock.build())
                 .build());
 
-        // getStreamHandlers()
         MethodSpec.Builder getStreamHandlers = MethodSpec.methodBuilder("getStreamHandlers")
                 .addModifiers(Modifier.PUBLIC)
                 .returns(ParameterizedTypeName.get(MAP, ClassName.get(String.class), STREAM_METHOD_HANDLER))
@@ -446,7 +429,6 @@ public class KafkaRpcGenerator {
         getStreamHandlers.addStatement("return m");
         serviceBase.addMethod(getStreamHandlers.build());
 
-        // getStreamHandler(String method) with switch
         CodeBlock.Builder streamSwitchBlock = CodeBlock.builder()
                 .add("return (correlationId, request, sink) -> {\n")
                 .add("  switch (method) {\n");
@@ -538,18 +520,17 @@ public class KafkaRpcGenerator {
         return "google.protobuf.Empty".equals(out) || ".google.protobuf.Empty".equals(out);
     }
 
-    /** Server-streaming: client gets stream of messages. Convention: method name starts with "Stream" or "ScalableStream". */
+    /** Server-streaming: detected via protobuf's server_streaming flag in .proto definition. */
     private static boolean isStreamMethod(DescriptorProtos.MethodDescriptorProto method) {
-        String name = method.getName();
-        return name.startsWith("Stream") || name.startsWith("ScalableStream");
+        return method.getServerStreaming();
     }
 
     /**
      * Ordered stream: all chunks go to one partition (key=correlationId), message order preserved.
      * Scalable stream: key=null, chunks may go to any partition, multiple consumers can scale; order not guaranteed.
-     * Convention: method name "ScalableStream*" = scalable; "Stream*" = ordered.
+     * Convention: method name starting with "Scalable" = scalable; otherwise = ordered.
      */
     private static boolean isOrderedStream(DescriptorProtos.MethodDescriptorProto method) {
-        return !method.getName().startsWith("ScalableStream");
+        return !method.getName().startsWith("Scalable");
     }
 }

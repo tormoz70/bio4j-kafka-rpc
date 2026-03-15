@@ -1,11 +1,14 @@
 package io.bio4j.kafkarpc;
 
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+@Slf4j
 final class StreamSinkImpl implements StreamSink {
 
     private final Producer<String, byte[]> producer;
@@ -33,9 +36,13 @@ final class StreamSinkImpl implements StreamSink {
         String key = ordered ? correlationId : null;
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, chunk);
         record.headers()
-                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
-                .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes() : new byte[0]);
-        producer.send(record);
+                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
+                .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes(StandardCharsets.UTF_8) : new byte[0]);
+        try {
+            producer.send(record).get();
+        } catch (Exception e) {
+            throw new IOException("Failed to send stream chunk", e);
+        }
     }
 
     @Override
@@ -44,10 +51,14 @@ final class StreamSinkImpl implements StreamSink {
         String key = ordered ? correlationId : null;
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, new byte[0]);
         record.headers()
-                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes())
-                .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes() : new byte[0])
-                .add(KafkaRpcConstants.HEADER_STREAM_END, "true".getBytes());
-        producer.send(record);
+                .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
+                .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes(StandardCharsets.UTF_8) : new byte[0])
+                .add(KafkaRpcConstants.HEADER_STREAM_END, "true".getBytes(StandardCharsets.UTF_8));
+        try {
+            producer.send(record).get();
+        } catch (Exception e) {
+            throw new IOException("Failed to send stream end", e);
+        }
     }
 
     @Override
