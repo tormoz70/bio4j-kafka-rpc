@@ -35,9 +35,9 @@ class NegativeScenariosIntegrationTest {
             "kafka-rpc.bootstrap-servers=localhost:17999",
             "kafka-rpc.clients.greeter.request-topic=greeter.request",
             "kafka-rpc.clients.greeter.reply-topic=greeter.reply",
-            "kafka-rpc.clients.greeter.timeout-ms=15000",
-            "kafka-rpc.producer.request.timeout.ms=5000",
-            "kafka-rpc.producer.metadata.max.age.ms=2000"
+            "kafka-rpc.clients.greeter.timeout-ms=7000",
+            "kafka-rpc.producer.request.timeout.ms=2000",
+            "kafka-rpc.producer.metadata.max.age.ms=1000"
     })
     @Nested
     static class KafkaUnavailable {
@@ -80,7 +80,7 @@ class NegativeScenariosIntegrationTest {
     @TestPropertySource(properties = {
             "kafka-rpc.clients.greeter.request-topic=greeter.request",
             "kafka-rpc.clients.greeter.reply-topic=greeter.reply",
-            "kafka-rpc.clients.greeter.timeout-ms=10000"
+            "kafka-rpc.clients.greeter.timeout-ms=5000"
     })
     @Nested
     static class RequestTopicMissing {
@@ -120,7 +120,7 @@ class NegativeScenariosIntegrationTest {
     @TestPropertySource(properties = {
             "kafka-rpc.clients.greeter.request-topic=greeter.request",
             "kafka-rpc.clients.greeter.reply-topic=greeter.reply.missing",
-            "kafka-rpc.clients.greeter.timeout-ms=8000"
+            "kafka-rpc.clients.greeter.timeout-ms=4000"
     })
     @Nested
     static class ReplyTopicMissing {
@@ -154,7 +154,7 @@ class NegativeScenariosIntegrationTest {
             kraft = false
     )
     @TestPropertySource(properties = {
-            "kafka-rpc.clients.greeter.timeout-ms=6000"
+            "kafka-rpc.clients.greeter.timeout-ms=5000"
     })
     @Nested
     static class ServerError {

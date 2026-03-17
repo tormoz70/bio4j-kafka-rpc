@@ -55,7 +55,10 @@ import static org.junit.jupiter.api.Assertions.*;
 @TestPropertySource(properties = {
         "kafka-rpc.clients.greeter-neg.request-topic=greeter.request.neg",
         "kafka-rpc.clients.greeter-neg.reply-topic=greeter.reply.neg",
-        "kafka-rpc.clients.greeter-neg.consumer.auto.offset.reset=earliest"
+        "kafka-rpc.clients.greeter-neg.consumer.auto.offset.reset=earliest",
+        "kafka-rpc.clients.greeter-neg.stream-healthcheck-interval-ms=1000",
+        "kafka-rpc.clients.greeter-neg.stream-healthcheck-timeout-ms=4000",
+        "kafka-rpc.clients.greeter-neg.stream-server-idle-timeout-ms=5000"
 })
 class StreamNegativeIntegrationTest {
 
@@ -101,7 +104,7 @@ class StreamNegativeIntegrationTest {
                 done.countDown();
             }
         });
-        assertTrue(done.await(60, TimeUnit.SECONDS), "Stream should finish or fail");
+        assertTrue(done.await(20, TimeUnit.SECONDS), "Stream should finish or fail");
         assertEquals(List.of(1, 2), values, "Should receive exactly 2 chunks before server 'dies'");
         Throwable err = streamError.get();
         assertNotNull(err, "Expected exception when server stops responding to healthcheck");
@@ -180,7 +183,10 @@ class StreamNegativeIntegrationTest {
 )
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @Tag("integration")
-@TestPropertySource(properties = "kafka-rpc.clients.greeter.stream-healthcheck-enabled=false")
+@TestPropertySource(properties = {
+        "kafka-rpc.clients.greeter.stream-healthcheck-enabled=false",
+        "kafka-rpc.clients.greeter.stream-server-idle-timeout-ms=5000"
+})
 class StreamNegativeClientDiesIntegrationTest {
 
     @SpringBootApplication
@@ -219,13 +225,13 @@ class StreamNegativeClientDiesIntegrationTest {
                 if (values.size() >= 2) gotTwo.countDown();
             }
         });
-        assertTrue(gotTwo.await(30, TimeUnit.SECONDS), "Should receive at least 2 chunks");
+        assertTrue(gotTwo.await(10, TimeUnit.SECONDS), "Should receive at least 2 chunks");
         assertTrue(values.size() >= 2, "Should have at least 2 chunks (may have more due to async drain)");
 
-        Thread.sleep(25_000);
+        Thread.sleep(8_000);
 
         int sent = chunkCountHolder.chunkCount.get();
-        assertTrue(sent < 60, "Server should have cancelled and stopped sending; sent=" + sent);
+        assertTrue(sent < 30, "Server should have cancelled and stopped sending; sent=" + sent);
     }
 
     @Configuration

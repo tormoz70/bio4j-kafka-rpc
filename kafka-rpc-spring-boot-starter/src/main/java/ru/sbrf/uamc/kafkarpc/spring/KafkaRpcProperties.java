@@ -171,6 +171,13 @@ public class KafkaRpcProperties {
         p.put("bootstrap.servers", getBootstrapServers());
         p.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         p.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
+        // Safe producer defaults for RPC traffic; can be overridden by kafka-rpc.producer.*
+        p.put("acks", "all");
+        p.put("enable.idempotence", "true");
+        p.put("retries", "10");
+        p.put("max.in.flight.requests.per.connection", "5");
+        p.put("request.timeout.ms", "30000");
+        p.put("delivery.timeout.ms", "120000");
         if (producer != null) {
             producer.forEach(p::setProperty);
         }

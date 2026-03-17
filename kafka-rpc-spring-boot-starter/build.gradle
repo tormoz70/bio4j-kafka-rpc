@@ -12,7 +12,13 @@ dependencies {
     implementation project(':kafka-rpc-runtime')
     implementation "org.apache.kafka:kafka-clients:${rootProject.ext.kafkaVersion}"
     implementation 'org.springframework.boot:spring-boot-starter'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
     compileOnly "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
     annotationProcessor "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
+}
+
+test {
+    useJUnitPlatform()
 }
