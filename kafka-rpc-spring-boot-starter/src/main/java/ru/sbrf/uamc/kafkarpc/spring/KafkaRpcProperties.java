@@ -45,7 +45,7 @@ public class KafkaRpcProperties {
     private int streamBufferSize = KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE;
 
     /**
-     * Per-client config. Key = client name (e.g. greeter). Used by generated *RpcChannel.
+     * Per-client config. Key = client name (e.g. greeter). Used by channel pool and generated stub providers.
      * Each client inherits global producer/consumer and can override.
      */
     private Map<String, Client> clients = new HashMap<>();

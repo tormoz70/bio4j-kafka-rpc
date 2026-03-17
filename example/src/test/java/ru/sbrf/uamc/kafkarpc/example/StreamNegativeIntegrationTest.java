@@ -240,7 +240,8 @@ class StreamNegativeClientDiesIntegrationTest {
         GreeterKafkaRpc.ServiceBase countingGreeterServiceImpl(
                 KafkaRpcProperties properties,
                 StreamNegativeIntegrationTest.StreamChunkCountHolder holder) {
-            return new GreeterKafkaRpc.ServiceBase(properties) {
+            return new GreeterKafkaRpc.ServiceBase(
+                    ru.sbrf.uamc.kafkarpc.spring.ServiceConfigTools.resolveRequestTopic(properties, "greeter")) {
                 @Override
                 protected GetGreetingResponse getGreeting(GetGreetingRequest request) {
                     return GetGreetingResponse.newBuilder().setGreeting("Hello, " + request.getName() + "!").build();

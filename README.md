@@ -179,8 +179,7 @@ protobuf {
 ### 4. Сервер
 
 ```java
-var impl = new GreeterKafkaRpc.ServiceBase() {
-  @Override public String getRequestTopic() { return "greeter.request"; }
+var impl = new GreeterKafkaRpc.ServiceBase("greeter.request") {
   @Override protected GetGreetingResponse getGreeting(GetGreetingRequest req) {
     return GetGreetingResponse.newBuilder().setGreeting("Hello, " + req.getName()).build();
   }
@@ -193,10 +192,16 @@ Reply topic is always taken from the client request header; the server does not 
 
 ### 5. Клиент
 
-Для каждого сервиса генерируется свой канал (например `GreeterRpcChannel`); конфигурация (producer/consumer, топики) берётся из `application.yml` через `KafkaRpcProperties`.
+Для каждого сервиса используйте pooled-канал из `KafkaRpcChannelPool` (Spring) или создавайте `PooledKafkaRpcChannel` вручную (без Spring).
 
 ```java
-try (var channel = new GreeterRpcChannel(properties)) {
+try (var channel = PooledKafkaRpcChannel.builder()
+    .producerConfig(properties.getProducerPropertiesForClient("greeter"))
+    .consumerConfig(properties.getConsumerPropertiesForClientPooled("greeter"))
+    .requestTopic(properties.getRequestTopicForClient("greeter"))
+    .replyTopic(properties.getReplyTopicForClient("greeter"))
+    .timeoutMs(properties.getTimeoutMsForClient("greeter"))
+    .build()) {
   var stub = new GreeterKafkaRpc.Stub(channel);
   var resp = stub.getGreeting(GetGreetingRequest.newBuilder().setName("World").build());
   System.out.println(resp.getGreeting());

@@ -196,7 +196,8 @@ class NegativeScenariosIntegrationTest {
         @Bean
         @Primary
         GreeterKafkaRpc.ServiceBase failingGreeterService(ru.sbrf.uamc.kafkarpc.spring.KafkaRpcProperties properties) {
-            return new GreeterKafkaRpc.ServiceBase(properties) {
+            return new GreeterKafkaRpc.ServiceBase(
+                    ru.sbrf.uamc.kafkarpc.spring.ServiceConfigTools.resolveRequestTopic(properties, "greeter")) {
                 @Override
                 protected GetGreetingResponse getGreeting(GetGreetingRequest request) {
                     if ("fail".equals(request.getName())) {

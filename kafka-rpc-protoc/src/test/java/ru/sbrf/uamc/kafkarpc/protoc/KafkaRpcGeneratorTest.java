@@ -13,12 +13,14 @@ class KafkaRpcGeneratorTest {
         var response = generate(serviceWith(
                 unaryMethod("GetFoo", ".test.FooRequest", ".test.FooResponse")));
 
-        assertEquals(3, response.getFileCount());
+        assertEquals(2, response.getFileCount());
         String kafkaRpcFile = findFile(response, "TestServiceKafkaRpc.java");
         assertNotNull(kafkaRpcFile);
         assertTrue(kafkaRpcFile.contains("class Stub"));
         assertTrue(kafkaRpcFile.contains("class AsyncStub"));
         assertTrue(kafkaRpcFile.contains("class ServiceBase"));
+        assertTrue(kafkaRpcFile.contains("ServiceBase(String requestTopic)"));
+        assertFalse(kafkaRpcFile.contains("KafkaRpcProperties"));
         assertTrue(kafkaRpcFile.contains("getFoo"));
         assertTrue(kafkaRpcFile.contains("getFooAsync"));
         assertTrue(kafkaRpcFile.contains("Map.of(KafkaRpcConstants.HEADER_METHOD"));
@@ -72,26 +74,15 @@ class KafkaRpcGeneratorTest {
     }
 
     @Test
-    void generatesRpcChannelAndStubProvider() {
+    void generatesStubProvider() {
         var response = generate(serviceWith(
                 unaryMethod("GetFoo", ".test.FooRequest", ".test.FooResponse")));
 
-        assertNotNull(findFile(response, "TestServiceRpcChannel.java"));
         String providerFile = findFile(response, "TestServiceStubProvider.java");
         assertNotNull(providerFile);
         assertTrue(providerFile.contains("getStub"));
         assertTrue(providerFile.contains("getAsyncStub"));
         assertTrue(providerFile.contains("@Component"));
-    }
-
-    @Test
-    void generatedRpcChannelIsDeprecated() {
-        var response = generate(serviceWith(
-                unaryMethod("GetFoo", ".test.FooRequest", ".test.FooResponse")));
-
-        String channelFile = findFile(response, "TestServiceRpcChannel.java");
-        assertNotNull(channelFile);
-        assertTrue(channelFile.contains("@Deprecated"));
     }
 
     @Test

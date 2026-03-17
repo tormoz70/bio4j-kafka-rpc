@@ -3,8 +3,10 @@ package ru.sbrf.uamc.kafkarpc;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -37,7 +39,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private static final long CONSUMER_RECOVERY_INITIAL_BACKOFF_MS = 1_000L;
     private static final long CONSUMER_RECOVERY_MAX_BACKOFF_MS = 30_000L;
 
-    private final KafkaProducer<String, byte[]> producer;
+    private final Producer<String, byte[]> producer;
     private final String requestTopic;
     private final String replyTopic;
     private final int timeoutMs;
@@ -129,6 +131,34 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         }
     }
 
+    // For tests: allows injecting mock producer/consumers without Kafka broker.
+    PooledKafkaRpcChannel(Producer<String, byte[]> producer,
+                          List<Consumer<String, byte[]>> consumers,
+                          String requestTopic,
+                          String replyTopic,
+                          int timeoutMs,
+                          int pollIntervalMs) {
+        this.requestTopic = requestTopic;
+        this.replyTopic = replyTopic;
+        this.timeoutMs = timeoutMs;
+        this.streamHealthcheckEnabled = true;
+        this.streamHealthcheckIntervalMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS;
+        this.streamHealthcheckTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
+        this.streamServerIdleTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
+        this.pollIntervalMs = pollIntervalMs;
+        this.streamBufferSize = KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE;
+        this.producer = producer;
+        this.consumerConfigBase = new Properties();
+
+        for (int i = 0; i < consumers.size(); i++) {
+            Consumer<String, byte[]> consumer = consumers.get(i);
+            consumer.subscribe(Collections.singletonList(replyTopic));
+            final int index = i;
+            Thread t = Thread.ofVirtual().name("kafka-rpc-pool-test-" + replyTopic + "-" + index).start(() -> runConsumer(consumer));
+            consumerThreads.add(t);
+        }
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -174,7 +204,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private void runConsumerLoop(int consumerIndex) {
         long backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
         while (!closed.get()) {
-            KafkaConsumer<String, byte[]> consumer = null;
+            Consumer<String, byte[]> consumer = null;
             try {
                 Properties cons = new Properties();
                 cons.putAll(consumerConfigBase);
@@ -202,7 +232,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         }
     }
 
-    private void runConsumer(KafkaConsumer<String, byte[]> consumer) {
+    private void runConsumer(Consumer<String, byte[]> consumer) {
         while (!closed.get()) {
             ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(pollIntervalMs));
             for (ConsumerRecord<String, byte[]> r : records) {

@@ -2,6 +2,7 @@ package ru.sbrf.uamc.kafkarpc.example;
 
 import ru.sbrf.uamc.kafkarpc.StreamSink;
 import ru.sbrf.uamc.kafkarpc.spring.KafkaRpcProperties;
+import ru.sbrf.uamc.kafkarpc.spring.ServiceConfigTools;
 import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,7 +15,7 @@ public class GreeterServiceImpl extends GreeterKafkaRpc.ServiceBase {
     private static final Logger log = LoggerFactory.getLogger(GreeterServiceImpl.class);
 
     public GreeterServiceImpl(KafkaRpcProperties properties) {
-        super(properties);
+        super(ServiceConfigTools.resolveRequestTopic(properties, "greeter"));
     }
 
     @Override
