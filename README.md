@@ -6,7 +6,7 @@
 - Java 21+
 - Gradle (Groovy DSL)
 - Lombok
-- Только unary RPC (без streaming)
+- Unary RPC, oneway и server-streaming
 - protoc-плагин для генерации клиентских stub'ов и серверной базы
 - Runtime на `kafka-clients`
 
@@ -43,7 +43,7 @@ plugins {
 ```groovy
 dependencies {
     implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
-    implementation 'org.apache.kafka:kafka-clients:3.7.0'
+    implementation 'org.apache.kafka:kafka-clients:3.9.2'
     implementation 'com.google.protobuf:protobuf-java:3.25.5'
 }
 ```
@@ -52,13 +52,13 @@ dependencies {
 
 ```groovy
 plugins {
-    id 'org.springframework.boot' version '3.2.5'
+    id 'org.springframework.boot' version '3.5.11'
     id 'io.spring.dependency-management' version '1.1.4'
 }
 
 dependencies {
     implementation 'ru.sbrf.uamc:kafka-rpc-spring-boot-starter:0.1.0-SNAPSHOT'
-    implementation 'org.apache.kafka:kafka-clients:3.6.2'  // версия, совместимая со spring-kafka
+    implementation 'org.apache.kafka:kafka-clients:3.9.2'
     implementation 'com.google.protobuf:protobuf-java:3.25.5'
 }
 ```

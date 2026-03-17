@@ -6,6 +6,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -33,6 +34,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 public class PooledKafkaRpcChannel implements KafkaRpcChannel {
+    private static final long CONSUMER_RECOVERY_INITIAL_BACKOFF_MS = 1_000L;
+    private static final long CONSUMER_RECOVERY_MAX_BACKOFF_MS = 30_000L;
 
     private final KafkaProducer<String, byte[]> producer;
     private final String requestTopic;
@@ -48,6 +51,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final ConcurrentHashMap<String, BlockingQueue<StreamChunk>> streamQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
     private final List<Thread> consumerThreads = new ArrayList<>();
+    private final Properties consumerConfigBase;
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
                                  String requestTopic, String replyTopic, int timeoutMs) {
@@ -116,14 +120,11 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         consBase.putAll(consumerConfig);
         consBase.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
         consBase.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
+        this.consumerConfigBase = consBase;
         int count = Math.max(1, consumerCount);
         for (int i = 0; i < count; i++) {
-            Properties cons = new Properties();
-            cons.putAll(consBase);
-            KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(cons);
-            consumer.subscribe(Collections.singletonList(replyTopic));
             final int index = i;
-            Thread t = Thread.ofVirtual().name("kafka-rpc-pool-" + replyTopic + "-" + index).start(() -> runConsumer(consumer));
+            Thread t = Thread.ofVirtual().name("kafka-rpc-pool-" + replyTopic + "-" + index).start(() -> runConsumerLoop(index));
             consumerThreads.add(t);
         }
     }
@@ -170,47 +171,78 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         }
     }
 
+    private void runConsumerLoop(int consumerIndex) {
+        long backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
+        while (!closed.get()) {
+            KafkaConsumer<String, byte[]> consumer = null;
+            try {
+                Properties cons = new Properties();
+                cons.putAll(consumerConfigBase);
+                consumer = new KafkaConsumer<>(cons);
+                consumer.subscribe(Collections.singletonList(replyTopic));
+                backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
+                runConsumer(consumer);
+            } catch (WakeupException e) {
+                if (!closed.get()) {
+                    log.warn("Pool consumer {} wakeup for {}, recreating", consumerIndex, replyTopic);
+                    sleepRecoveryBackoff(backoffMs);
+                    backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
+                }
+            } catch (Exception e) {
+                if (!closed.get()) {
+                    log.warn("Pool consumer {} failed for {}, recreating in {} ms", consumerIndex, replyTopic, backoffMs, e);
+                    sleepRecoveryBackoff(backoffMs);
+                    backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
+                }
+            } finally {
+                if (consumer != null) {
+                    consumer.close();
+                }
+            }
+        }
+    }
+
     private void runConsumer(KafkaConsumer<String, byte[]> consumer) {
-        try {
-            while (!closed.get()) {
-                ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(pollIntervalMs));
-                for (ConsumerRecord<String, byte[]> r : records) {
-                    String correlationId = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_CORRELATION_ID);
-                    if (correlationId == null) continue;
+        while (!closed.get()) {
+            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(pollIntervalMs));
+            for (ConsumerRecord<String, byte[]> r : records) {
+                String correlationId = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_CORRELATION_ID);
+                if (correlationId == null) continue;
 
-                    String errorMsg = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_ERROR);
-                    boolean streamEnd = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_STREAM_END) != null;
+                String errorMsg = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_ERROR);
+                boolean streamEnd = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_STREAM_END) != null;
 
-                    BlockingQueue<StreamChunk> sq = streamQueues.get(correlationId);
-                    if (sq != null) {
-                        if (errorMsg != null) {
-                            sq.add(new StreamChunk.Poison(new IOException("Server error: " + errorMsg)));
-                            streamQueues.remove(correlationId);
-                        } else if (streamEnd) {
-                            sq.add(new StreamChunk.End());
-                            streamQueues.remove(correlationId);
-                        } else {
-                            sq.add(new StreamChunk.Data(r.value()));
-                        }
-                        continue;
+                BlockingQueue<StreamChunk> sq = streamQueues.get(correlationId);
+                if (sq != null) {
+                    if (errorMsg != null) {
+                        sq.add(new StreamChunk.Poison(new IOException("Server error: " + errorMsg)));
+                        streamQueues.remove(correlationId);
+                    } else if (streamEnd) {
+                        sq.add(new StreamChunk.End());
+                        streamQueues.remove(correlationId);
+                    } else {
+                        sq.add(new StreamChunk.Data(r.value()));
                     }
+                    continue;
+                }
 
-                    CompletableFuture<byte[]> f = pending.remove(correlationId);
-                    if (f != null) {
-                        if (errorMsg != null) {
-                            f.completeExceptionally(new IOException("Server error: " + errorMsg));
-                        } else {
-                            f.complete(r.value());
-                        }
+                CompletableFuture<byte[]> f = pending.remove(correlationId);
+                if (f != null) {
+                    if (errorMsg != null) {
+                        f.completeExceptionally(new IOException("Server error: " + errorMsg));
+                    } else {
+                        f.complete(r.value());
                     }
                 }
             }
-        } catch (Exception e) {
-            if (!closed.get()) {
-                log.warn("Pool consumer error for {}: {}", replyTopic, e.getMessage());
-            }
-        } finally {
-            consumer.close();
+        }
+    }
+
+    private void sleepRecoveryBackoff(long backoffMs) {
+        try {
+            Thread.sleep(backoffMs);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 

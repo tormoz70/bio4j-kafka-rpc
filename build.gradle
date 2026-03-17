@@ -1,7 +1,7 @@
 
 ext {
     protobufVersion = '3.25.5'
-    kafkaVersion = '3.7.0'
+    kafkaVersion = '3.9.2'
     lombokVersion = '1.18.30'
 }
 
