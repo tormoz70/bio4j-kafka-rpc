@@ -9,7 +9,7 @@ subprojects {
     apply plugin: 'java'
     apply plugin: 'maven-publish'
 
-    group = 'io.bio4j'
+    group = 'ru.sbrf.uamc'
     version = '0.1.0-SNAPSHOT'
 
     java {

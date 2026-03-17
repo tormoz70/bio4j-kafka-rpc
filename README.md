@@ -42,7 +42,7 @@ plugins {
 
 ```groovy
 dependencies {
-    implementation 'io.bio4j:kafka-rpc-runtime:0.1.0-SNAPSHOT'
+    implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
     implementation 'org.apache.kafka:kafka-clients:3.7.0'
     implementation 'com.google.protobuf:protobuf-java:3.25.5'
 }
@@ -57,7 +57,7 @@ plugins {
 }
 
 dependencies {
-    implementation 'io.bio4j:kafka-rpc-spring-boot-starter:0.1.0-SNAPSHOT'
+    implementation 'ru.sbrf.uamc:kafka-rpc-spring-boot-starter:0.1.0-SNAPSHOT'
     implementation 'org.apache.kafka:kafka-clients:3.6.2'  // версия, совместимая со spring-kafka
     implementation 'com.google.protobuf:protobuf-java:3.25.5'
 }
@@ -104,9 +104,9 @@ protobuf {
 
 ```groovy
 dependencies {
-    implementation 'io.bio4j:kafka-rpc-runtime:0.1.0-SNAPSHOT'
+    implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
     // для генерации (compileOnly или отдельная конфигурация):
-    compileOnly 'io.bio4j:kafka-rpc-protoc:0.1.0-SNAPSHOT'
+    compileOnly 'ru.sbrf.uamc:kafka-rpc-protoc:0.1.0-SNAPSHOT'
 }
 
 protobuf {
@@ -134,7 +134,7 @@ protobuf {
 ### 1. Зависимости
 
 ```groovy
-implementation 'io.bio4j:kafka-rpc-runtime:0.1.0-SNAPSHOT'
+implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
 ```
 
 ### 2. proto-файл

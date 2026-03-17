@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option java_package = "io.bio4j.kafkarpc.example";
+option java_package = "ru.sbrf.uamc.kafkarpc.example";
 option java_multiple_files = true;
 
 import "google/protobuf/empty.proto";

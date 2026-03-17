@@ -1,2 +1,2 @@
-io.bio4j.kafkarpc.spring.KafkaRpcChannelPoolAutoConfiguration
-io.bio4j.kafkarpc.spring.KafkaRpcServerAutoConfiguration
+ru.sbrf.uamc.kafkarpc.spring.KafkaRpcChannelPoolAutoConfiguration
+ru.sbrf.uamc.kafkarpc.spring.KafkaRpcServerAutoConfiguration

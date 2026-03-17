@@ -18,7 +18,7 @@ shadowJar {
     archiveBaseName = 'protoc-gen-kafka-rpc'
     archiveClassifier = ''
     manifest {
-        attributes 'Main-Class': 'io.bio4j.kafkarpc.protoc.KafkaRpcGenerator'
+        attributes 'Main-Class': 'ru.sbrf.uamc.kafkarpc.protoc.KafkaRpcGenerator'
     }
 }
 
