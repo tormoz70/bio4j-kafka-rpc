@@ -1,4 +1,5 @@
 plugins {
+    id 'buildlogic.java-conventions'
     id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
@@ -8,10 +9,6 @@ dependencies {
     implementation project(':kafka-rpc-runtime')
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
-}
-
-test {
-    useJUnitPlatform()
 }
 
 shadowJar {

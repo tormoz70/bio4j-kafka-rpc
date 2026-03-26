@@ -1,3 +1,7 @@
+pluginManagement {
+    includeBuild('build-logic')
+}
+
 rootProject.name = 'bio4j-kafka-rpc'
 
 include 'kafka-rpc-protoc'
