@@ -16,7 +16,6 @@
 |--------|----------|
 | `kafka-rpc-runtime` | Runtime: KafkaRpcChannel, KafkaRpcServer |
 | `kafka-rpc-protoc` | protoc-плагин для генерации кода |
-| `example` | Пример сервиса Greeter |
 
 ## Настройка проекта в Gradle (клиент и сервер)
 
@@ -80,17 +79,34 @@ dependencies {
 ```groovy
 evaluationDependsOn ':kafka-rpc-protoc'
 
-def protocPluginScript = project(':kafka-rpc-protoc').layout.buildDirectory.dir('scripts').get().asFile
-def pluginExe = new File(protocPluginScript, System.getProperty('os.name').toLowerCase().contains('windows') ? 'protoc-gen-kafka-rpc.bat' : 'protoc-gen-kafka-rpc')
+def pluginScriptDir = layout.buildDirectory.dir('scripts')
+def pluginScriptName = System.getProperty('os.name').toLowerCase().contains('windows') ? 'protoc-gen-kafka-rpc.bat' : 'protoc-gen-kafka-rpc'
+def pluginExe = new File(pluginScriptDir.get().asFile, pluginScriptName)
+
+tasks.register('prepareKafkaRpcProtocPluginScript') {
+    dependsOn ':kafka-rpc-protoc:protocPluginJar'
+    outputs.dir(pluginScriptDir)
+    doLast {
+        def pluginJar = project(':kafka-rpc-protoc').tasks.named('protocPluginJar', Jar).get().archiveFile.get().asFile
+        def scriptRoot = pluginScriptDir.get().asFile
+        scriptRoot.mkdirs()
+
+        def jarPath = pluginJar.absolutePath
+        new File(scriptRoot, 'protoc-gen-kafka-rpc.bat').text = "@echo off\r\njava -jar \"$jarPath\" %*\r\n"
+        def sh = new File(scriptRoot, 'protoc-gen-kafka-rpc')
+        sh.text = "#!/bin/sh\nexec java -jar \"$jarPath\" \"\$@\"\n"
+        sh.executable = true
+    }
+}
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
     plugins {
-        kafkaRpc { path = pluginExe }
+        kafkaRpc { path = pluginExe.absolutePath }
     }
     generateProtoTasks {
         ofSourceSet('main').each { task ->
-            task.dependsOn ':kafka-rpc-protoc:pluginScript'
+            task.dependsOn tasks.named('prepareKafkaRpcProtocPluginScript')
             task.builtins { java {} }
             task.plugins { kafkaRpc {} }
         }
@@ -127,7 +143,7 @@ protobuf {
 
 ### Один проект (и клиент, и сервер)
 
-Как в модуле `example`: подключаете `kafka-rpc-spring-boot-starter` (или runtime + свои конфиги), настраиваете protobuf-плагин один раз. Из одних и тех же `.proto` получаете и stub'ы для клиента, и `ServiceBase` для сервера; в приложении используете и те, и другие (конфигурация через `kafka-rpc.clients.*` и `kafka-rpc.service.*` в `application.yml`).
+Как в отдельном проекте `bio4j-kafka-rpc-example`: подключаете `kafka-rpc-spring-boot-starter` (или runtime + свои конфиги), настраиваете protobuf-плагин один раз. Из одних и тех же `.proto` получаете и stub'ы для клиента, и `ServiceBase` для сервера; в приложении используете и те, и другие (конфигурация через `kafka-rpc.clients.*` и `kafka-rpc.service.*` в `application.yml`).
 
 ## Использование
 
@@ -266,9 +282,9 @@ docker run -d --name kafka -p 9092:9092 apache/kafka
 Запуск сервера и клиента:
 
 ```bash
-# Терминал 1 — сервер
-./gradlew :example:runServer
+# Терминал 1 — сервер (в проекте bio4j-kafka-rpc-example)
+./gradlew bootRun
 
 # Терминал 2 — клиент
-./gradlew :example:run
+curl "http://localhost:8080/greet?name=World"
 ```

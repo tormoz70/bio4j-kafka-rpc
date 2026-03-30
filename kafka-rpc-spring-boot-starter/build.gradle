@@ -1,15 +1,11 @@
 plugins {
     id 'buildlogic.java-conventions'
-    id 'io.spring.dependency-management' version '1.1.4'
-}
-
-dependencyManagement {
-    imports {
-        mavenBom "org.springframework.boot:spring-boot-dependencies:3.5.11"
-    }
 }
 
 dependencies {
+    implementation platform('org.springframework.boot:spring-boot-dependencies:3.5.11')
+    testImplementation platform('org.springframework.boot:spring-boot-dependencies:3.5.11')
+
     implementation project(':kafka-rpc-runtime')
     implementation "org.apache.kafka:kafka-clients:${rootProject.ext.kafkaVersion}"
     implementation 'org.springframework.boot:spring-boot-starter'

@@ -1,6 +1,5 @@
 plugins {
     id 'buildlogic.java-conventions'
-    id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 dependencies {
@@ -11,9 +10,17 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
 }
 
-shadowJar {
+def protocPluginJar = tasks.register('protocPluginJar', Jar) {
     archiveBaseName = 'protoc-gen-kafka-rpc'
     archiveClassifier = ''
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from sourceSets.main.output
+    dependsOn configurations.runtimeClasspath
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+
     manifest {
         attributes 'Main-Class': 'ru.sbrf.uamc.kafkarpc.protoc.KafkaRpcGenerator'
     }
@@ -21,21 +28,15 @@ shadowJar {
 
 jar {
     enabled = false
-    dependsOn shadowJar
+    dependsOn protocPluginJar
 }
 
-def pluginScriptDir = layout.buildDirectory.dir('scripts').get().asFile
-tasks.create('pluginScript', Copy) {
-    dependsOn shadowJar
-    from shadowJar.archiveFile
-    into pluginScriptDir
-    rename { 'protoc-gen-kafka-rpc.jar' }
-    doLast {
-        def jarPath = new File(pluginScriptDir, 'protoc-gen-kafka-rpc.jar').absolutePath
-        new File(pluginScriptDir, 'protoc-gen-kafka-rpc.bat').text = "@echo off\r\njava -jar \"$jarPath\" %*\r\n"
-        def sh = new File(pluginScriptDir, 'protoc-gen-kafka-rpc')
-        sh.text = "#!/bin/sh\nexec java -jar \"$jarPath\" \"\$@\"\n"
-        sh.executable = true
+publishing {
+    publications {
+        create('mavenJava', MavenPublication) {
+            artifact(protocPluginJar)
+            artifact(sourcesJar)
+        }
     }
 }
 

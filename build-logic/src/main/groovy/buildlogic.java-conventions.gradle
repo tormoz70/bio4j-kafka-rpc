@@ -29,3 +29,13 @@ tasks.withType(Test).configureEach {
         }
     }
 }
+
+publishing {
+    publications {
+        if (project.name != 'kafka-rpc-protoc' && !findByName('mavenJava')) {
+            create('mavenJava', MavenPublication) {
+                from components.java
+            }
+        }
+    }
+}
