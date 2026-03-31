@@ -226,6 +226,9 @@ try (var channel = PooledKafkaRpcChannel.builder()
 
 ### 6. Конфигурация (много клиентов и серверов)
 
+Подробный справочник по `application.yml` (все ключи, приоритеты, `group.id`, кейсы и анти-кейсы):
+[`docs/application-yml-configuration.md`](docs/application-yml-configuration.md)
+
 В `application.yml` под `kafka-rpc`:
 - **Общие настройки:** `bootstrap-servers`, `producer`, `consumer` — база для всех клиентов и серверов.
 - **Стриминг (глобально):** `stream-healthcheck-interval-ms` (интервал хелсчека клиента, по умолчанию 5000), `stream-healthcheck-timeout-ms` (таймаут «стрим мёртв» на клиенте, 15000), `stream-server-idle-timeout-ms` (таймаут простоя стрима на сервере; задаётся только на клиенте, передаётся в обязательном заголовке при старте стрима; по умолчанию 20000).
