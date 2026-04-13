@@ -22,8 +22,7 @@ public class KafkaRpcProperties {
     /** Enable Kafka RPC server (consumes requests). */
     private boolean serverEnabled = true;
 
-    /** Default consumer group ID prefix for server. */
-    private String serverGroupId = "kafka-rpc-server";
+    
 
     /** Number of consumer threads for server (request topic). Enables scaling via partitioning. Default 1. */
     private int serverConsumerCount = 1;
@@ -85,37 +84,27 @@ public class KafkaRpcProperties {
     }
 
     /**
-     * Build consumer Properties for a client: global base + client overrides. group.id gets unique suffix.
-     *
-     * @param clientName key from kafka-rpc.clients (e.g. greeter)
-     */
-    public Properties getConsumerPropertiesForClient(String clientName) {
-        var p = baseConsumerProperties(false);
-        if (clientName != null && clients != null) {
-            var client = clients.get(clientName);
-            if (client != null && client.getConsumer() != null) {
-                client.getConsumer().forEach(p::setProperty);
-            }
-        }
-        String prefix = p.getProperty("group.id", "kafka-rpc-client");
-        p.setProperty("group.id", prefix + "-" + System.currentTimeMillis());
-        return p;
-    }
-
-    /**
-     * Build consumer Properties for a pooled client channel (stable group.id, no unique suffix).
-     * Used by KafkaRpcChannelPool so the same consumer group is reused.
+     * Build consumer Properties for a pooled client channel.
+     * Uses client.group-id if set, otherwise defaults to reply-topic + "-group".
      */
     public Properties getConsumerPropertiesForClientPooled(String clientName) {
         var p = baseConsumerProperties(false);
+        Client client = null;
         if (clientName != null && clients != null) {
-            var client = clients.get(clientName);
+            client = clients.get(clientName);
             if (client != null && client.getConsumer() != null) {
                 client.getConsumer().forEach(p::setProperty);
             }
         }
-        String base = p.getProperty("group.id", "kafka-rpc-client");
-        p.setProperty("group.id", base + "-" + clientName);
+        String groupId;
+        if (client != null && client.getGroupId() != null && !client.getGroupId().isBlank()) {
+            groupId = client.getGroupId();
+        } else if (client != null && client.getReplyTopic() != null && !client.getReplyTopic().isBlank()) {
+            groupId = client.getReplyTopic() + "-group";
+        } else {
+            groupId = clientName + "-group";
+        }
+        p.setProperty("group.id", groupId);
         return p;
     }
 
@@ -137,34 +126,24 @@ public class KafkaRpcProperties {
 
     /**
      * Build consumer Properties for a server: global base + service overrides + group.id.
+     * Uses service.group-id if set, otherwise defaults to request-topic + "-group".
      *
      * @param serviceName  key from kafka-rpc.service (e.g. greeter)
-     * @param requestTopic Kafka topic the server consumes from; used as group.id suffix
+     * @param requestTopic Kafka topic the server consumes from; used for default group.id
      */
     public Properties getConsumerPropertiesForServer(String serviceName, String requestTopic) {
         var p = baseConsumerProperties(true);
+        Service svc = null;
         if (serviceName != null && service != null) {
-            var svc = service.get(serviceName);
+            svc = service.get(serviceName);
             if (svc != null && svc.getConsumer() != null) {
                 svc.getConsumer().forEach(p::setProperty);
             }
         }
-        p.setProperty("group.id", serverGroupId + "-" + requestTopic);
-        return p;
-    }
-
-    /** Global producer base (bootstrap + default serializers + kafka-rpc.producer). */
-    public Properties getProducerProperties() {
-        return baseProducerProperties();
-    }
-
-    /** Global consumer base. For backward compatibility. Prefer getConsumerPropertiesForClient(name) / getConsumerPropertiesForServer(name, topic). */
-    public Properties getConsumerProperties(boolean forServer) {
-        var p = baseConsumerProperties(forServer);
-        if (!forServer) {
-            String prefix = p.getProperty("group.id", "kafka-rpc-client");
-            p.setProperty("group.id", prefix + "-" + System.currentTimeMillis());
-        }
+        String groupId = (svc != null && svc.getGroupId() != null && !svc.getGroupId().isBlank())
+                ? svc.getGroupId()
+                : requestTopic + "-group";
+        p.setProperty("group.id", groupId);
         return p;
     }
 
@@ -322,6 +301,8 @@ public class KafkaRpcProperties {
     public static class Client {
         private String requestTopic;
         private String replyTopic;
+        /** Explicit consumer group ID for this client. Default: &lt;clientName&gt;-group. */
+        private String groupId;
         /** Override global timeout for this client (ms). */
         private Integer timeoutMs;
         /** When false, stream RPCs do not send healthcheck (for testing: server will cancel after idle timeout). Default true. */
@@ -347,6 +328,8 @@ public class KafkaRpcProperties {
     @Data
     public static class Service {
         private String requestTopic;
+        /** Explicit consumer group ID for this service. Default: &lt;request-topic&gt;-group. */
+        private String groupId;
         /** Number of consumer threads for request topic. Override global kafka-rpc.server-consumer-count. */
         private Integer consumerCount;
         /** Consumer poll interval (ms). Override global kafka-rpc.poll-interval-ms. */

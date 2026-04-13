@@ -62,7 +62,6 @@ kafka-rpc:
 |---|---|---|---|
 | `kafka-rpc.bootstrap-servers` | `string` | `localhost:9092` | Kafka bootstrap servers |
 | `kafka-rpc.server-enabled` | `boolean` | `true` | Включить серверную автоконфигурацию |
-| `kafka-rpc.server-group-id` | `string` | `kafka-rpc-server` | Префикс `group.id` для серверов |
 | `kafka-rpc.server-consumer-count` | `int` | `1` | Число consumer threads сервера |
 | `kafka-rpc.client-consumer-count` | `int` | `1` | Число consumer threads клиента |
 | `kafka-rpc.timeout-ms` | `int` | `30000` | Таймаут unary RPC по умолчанию |
@@ -80,6 +79,7 @@ kafka-rpc:
 |---|---|---|---|
 | `request-topic` | `string` | да | Топик запросов |
 | `reply-topic` | `string` | да | Топик ответов |
+| `group-id` | `string` | нет | Явный `group.id` для consumer group клиента. По умолчанию: `<reply-topic>-group` |
 | `timeout-ms` | `int` | нет | Таймаут только для этого клиента |
 | `consumer-count` | `int` | нет | Число consumer threads клиента |
 | `poll-interval-ms` | `int` | нет | Poll interval только для клиента |
@@ -96,11 +96,11 @@ kafka-rpc:
 | Ключ | Тип | Обязателен | Назначение |
 |---|---|---|---|
 | `request-topic` | `string` | да | Топик запросов сервиса |
+| `group-id` | `string` | нет | Явный `group.id` для consumer group сервиса. По умолчанию: `<request-topic>-group` |
 | `consumer-count` | `int` | нет | Число consumer threads сервера для сервиса |
+| `poll-interval-ms` | `int` | нет | Poll interval для сервиса |
 | `producer.*` | `map<string,string>` | нет | Kafka Producer overrides для сервиса |
 | `consumer.*` | `map<string,string>` | нет | Kafka Consumer overrides для сервиса |
-
-Примечание: поле `service.<name>.poll-interval-ms` присутствует в model properties, но в текущей реализации server lifecycle используется глобальный `kafka-rpc.poll-interval-ms`.
 
 ## 3. Как формируется group.id
 
@@ -108,45 +108,45 @@ kafka-rpc:
 
 Для каждого сервиса `group.id` формируется так:
 
-`<kafka-rpc.server-group-id>-<request-topic>`
+1. `kafka-rpc.service.<name>.group-id` — если задан явно
+2. иначе `<request-topic>-group`
 
 Пример:
 
 ```yaml
 kafka-rpc:
-  server-group-id: rpc-srv
   service:
     greeter:
       request-topic: greeter.request
+      # group.id = greeter.request-group (по умолчанию)
+    echo:
+      request-topic: echo.request
+      group-id: my-echo-group
+      # group.id = my-echo-group (задан явно)
 ```
-
-Итоговый `group.id`: `rpc-srv-greeter.request`.
 
 ### Клиент
 
-В starter используется пул каналов (`KafkaRpcChannelPool`) и стабильный `group.id`:
+Для каждого клиента `group.id` формируется так:
 
-`<base-group-id>-<clientName>`
-
-Где `base-group-id` берется из:
-
-1. `kafka-rpc.clients.<name>.consumer.group.id` (если задан)
-2. иначе `kafka-rpc.consumer.group.id` (если задан)
-3. иначе `kafka-rpc-client`
+1. `kafka-rpc.clients.<name>.group-id` — если задан явно
+2. иначе `<reply-topic>-group`
 
 Пример:
 
 ```yaml
 kafka-rpc:
-  consumer:
-    group.id: app-rpc
   clients:
     greeter:
       request-topic: greeter.request
       reply-topic: greeter.reply
+      # group.id = greeter.reply-group (по умолчанию)
+    pricing:
+      request-topic: pricing.request
+      reply-topic: pricing.reply
+      group-id: my-pricing-group
+      # group.id = my-pricing-group (задан явно)
 ```
-
-Итоговый `group.id`: `app-rpc-greeter`.
 
 ## 4. Варианты описания топиков
 
@@ -245,7 +245,7 @@ kafka-rpc:
   service:
     greeter:
       request-topic: greeter.request
-  server-group-id: my-rpc-server
+      group-id: my-rpc-server-greeter
 ```
 
 ### 5.4 Масштабирование через partitioning
@@ -412,7 +412,6 @@ spring:
 kafka-rpc:
   bootstrap-servers: localhost:9092
   server-enabled: true
-  server-group-id: billing-dev
 
   # Небольшие значения для быстрой обратной связи
   timeout-ms: 10000
@@ -426,7 +425,6 @@ kafka-rpc:
     acks: all
     linger.ms: "5"
   consumer:
-    group.id: billing-dev-rpc
     auto.offset.reset: earliest
 
   clients:
@@ -455,7 +453,6 @@ spring:
 kafka-rpc:
   bootstrap-servers: kafka-stage-1:9092,kafka-stage-2:9092
   server-enabled: true
-  server-group-id: billing-stage
 
   timeout-ms: 20000
   poll-interval-ms: 100
@@ -472,7 +469,6 @@ kafka-rpc:
     acks: all
     compression.type: lz4
   consumer:
-    group.id: billing-stage-rpc
     max.poll.records: "500"
 
   clients:
@@ -504,7 +500,6 @@ spring:
 kafka-rpc:
   bootstrap-servers: kafka-prod-1:9092,kafka-prod-2:9092,kafka-prod-3:9092
   server-enabled: true
-  server-group-id: billing-prod
 
   timeout-ms: 30000
   poll-interval-ms: 100
@@ -523,7 +518,6 @@ kafka-rpc:
     compression.type: lz4
     linger.ms: "5"
   consumer:
-    group.id: billing-prod-rpc
     max.poll.records: "1000"
     fetch.min.bytes: "1"
 
@@ -551,7 +545,7 @@ kafka-rpc:
 
 - Используйте одинаковые ключи `clients.<name>` и `service.<name>` во всех окружениях, меняйте только значения.
 - Разделяйте topic names по окружениям (`*.dev`, `*.stage`) или отдельными кластерами Kafka.
-- Явно задавайте `kafka-rpc.consumer.group.id`, чтобы контролировать паттерн `group.id`.
+- Используйте `service.<name>.group-id` для явного контроля `group.id` серверных сервисов.
 - Для production проверяйте соответствие `consumer-count` и количества partitions до релиза.
 
 ## 10. Ролевые пресеты
@@ -606,7 +600,6 @@ spring:
 kafka-rpc:
   bootstrap-servers: localhost:9092
   server-enabled: true
-  server-group-id: billing-server
 
   server-consumer-count: 4
   poll-interval-ms: 100
@@ -615,13 +608,13 @@ kafka-rpc:
     acks: all
     compression.type: lz4
   consumer:
-    group.id: billing-server-rpc
     auto.offset.reset: earliest
     max.poll.records: "1000"
 
   service:
     billing:
       request-topic: billing.request
+      group-id: billing-server
       consumer-count: 4
       consumer:
         max.poll.records: "2000"

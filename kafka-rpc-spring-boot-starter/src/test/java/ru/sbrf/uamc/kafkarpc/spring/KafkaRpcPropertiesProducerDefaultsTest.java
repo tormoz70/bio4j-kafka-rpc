@@ -14,7 +14,7 @@ class KafkaRpcPropertiesProducerDefaultsTest {
         var properties = new KafkaRpcProperties();
         properties.setBootstrapServers("kafka:9092");
 
-        var producer = properties.getProducerProperties();
+        var producer = properties.getProducerPropertiesForServer(null);
 
         assertEquals("kafka:9092", producer.getProperty("bootstrap.servers"));
         assertEquals("org.apache.kafka.common.serialization.StringSerializer", producer.getProperty("key.serializer"));
@@ -38,7 +38,7 @@ class KafkaRpcPropertiesProducerDefaultsTest {
         producerOverrides.put("delivery.timeout.ms", "5000");
         properties.setProducer(producerOverrides);
 
-        var producer = properties.getProducerProperties();
+        var producer = properties.getProducerPropertiesForServer(null);
 
         assertEquals("1", producer.getProperty("acks"));
         assertEquals("false", producer.getProperty("enable.idempotence"));
