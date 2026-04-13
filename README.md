@@ -195,16 +195,18 @@ protobuf {
 ### 4. Сервер
 
 ```java
-var impl = new GreeterKafkaRpc.ServiceBase("greeter.request") {
+var impl = new GreeterKafkaRpc.ServiceBase() {
   @Override protected GetGreetingResponse getGreeting(GetGreetingRequest req) {
     return GetGreetingResponse.newBuilder().setGreeting("Hello, " + req.getName()).build();
   }
 };
+String requestTopic = "greeter.request"; // in Spring Boot, resolved from kafka-rpc.service.<name>.request-topic
 var server = new KafkaRpcServer(consumerConfig, producerConfig,
-    impl.getRequestTopic(), impl.getHandlers());
+    requestTopic, impl.getHandlers());
 server.start();
 ```
 Reply topic is always taken from the client request header; the server does not need it in config.
+Service name defaults to the proto service name (e.g. `greeter` for `service Greeter`); the request topic is resolved from `kafka-rpc.service.<name>.request-topic` by the auto-configuration.
 
 ### 5. Клиент
 

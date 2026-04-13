@@ -13,7 +13,6 @@ import org.springframework.context.annotation.Configuration;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 
 @Configuration
 @EnableConfigurationProperties(KafkaRpcProperties.class)
@@ -41,22 +40,22 @@ public class KafkaRpcServerAutoConfiguration {
         public void start() {
             for (KafkaRpcService service : services) {
                 String serviceName = service.getServiceName();
-                var consumerConfig = properties.getConsumerPropertiesForServer(serviceName);
+                String requestTopic = ServiceConfigTools.resolveRequestTopic(properties, serviceName);
+                var consumerConfig = properties.getConsumerPropertiesForServer(serviceName, requestTopic);
                 var producerConfig = properties.getProducerPropertiesForServer(serviceName);
-                consumerConfig.put("group.id", properties.getServerGroupId() + "-" + service.getRequestTopic());
                 int consumerCount = properties.getServerConsumerCountForService(serviceName);
-                int pollIntervalMs = properties.getPollIntervalMs();
+                int pollIntervalMs = properties.getPollIntervalMsForService(serviceName);
 
                 var server = new KafkaRpcServer(
                         consumerConfig, producerConfig,
-                        service.getRequestTopic(),
+                        requestTopic,
                         service.getHandlers(),
                         service.getStreamHandlers(),
                         consumerCount,
                         pollIntervalMs);
                 servers.add(server);
                 server.start();
-                log.info("Started Kafka RPC server for {} (service {})", service.getRequestTopic(), serviceName);
+                log.info("Started Kafka RPC server for {} (service {})", requestTopic, serviceName);
             }
         }
 

@@ -317,28 +317,27 @@ public class KafkaRpcGenerator {
     private static TypeSpec buildServiceBaseClass(DescriptorProtos.FileDescriptorProto file,
                                                   DescriptorProtos.ServiceDescriptorProto service,
                                                   String javaPackage) {
-        String serviceName = lowerFirst(service.getName());
+        String defaultServiceName = lowerFirst(service.getName());
         TypeSpec.Builder serviceBase = TypeSpec.classBuilder("ServiceBase")
                 .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT, Modifier.STATIC)
                 .addSuperinterface(KAFKA_RPC_SERVICE)
-                .addJavadoc("Server base - extend, call super(requestTopic), and override RPC methods.")
-                .addField(FieldSpec.builder(String.class, "requestTopic", Modifier.PROTECTED, Modifier.FINAL)
+                .addJavadoc("Server base - extend and override RPC methods. Service name defaults to $S.\n", defaultServiceName)
+                .addField(FieldSpec.builder(String.class, "serviceName", Modifier.PRIVATE, Modifier.FINAL)
                         .build())
                 .addMethod(MethodSpec.constructorBuilder()
                         .addModifiers(Modifier.PUBLIC)
-                        .addParameter(String.class, "requestTopic")
-                        .addStatement("if (requestTopic == null || requestTopic.isEmpty()) throw new $T($S)", IllegalArgumentException.class, "requestTopic must be set")
-                        .addStatement("this.requestTopic = requestTopic")
+                        .addStatement("this.serviceName = $S", defaultServiceName)
+                        .build())
+                .addMethod(MethodSpec.constructorBuilder()
+                        .addModifiers(Modifier.PUBLIC)
+                        .addParameter(String.class, "serviceName")
+                        .addStatement("if (serviceName == null || serviceName.isEmpty()) throw new $T($S)", IllegalArgumentException.class, "serviceName must be set")
+                        .addStatement("this.serviceName = serviceName")
                         .build())
                 .addMethod(MethodSpec.methodBuilder("getServiceName")
                         .addModifiers(Modifier.PUBLIC)
                         .returns(String.class)
-                        .addStatement("return $S", serviceName)
-                        .build())
-                .addMethod(MethodSpec.methodBuilder("getRequestTopic")
-                        .addModifiers(Modifier.PUBLIC)
-                        .returns(String.class)
-                        .addStatement("return requestTopic")
+                        .addStatement("return serviceName")
                         .build());
 
         ClassName methodHandler = ClassName.get("ru.sbrf.uamc.kafkarpc", "KafkaRpcServer", "MethodHandler");

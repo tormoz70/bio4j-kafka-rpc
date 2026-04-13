@@ -19,7 +19,7 @@ class KafkaRpcGeneratorTest {
         assertTrue(kafkaRpcFile.contains("class Stub"));
         assertTrue(kafkaRpcFile.contains("class AsyncStub"));
         assertTrue(kafkaRpcFile.contains("class ServiceBase"));
-        assertTrue(kafkaRpcFile.contains("ServiceBase(String requestTopic)"));
+        assertTrue(kafkaRpcFile.contains("ServiceBase(String serviceName)"));
         assertFalse(kafkaRpcFile.contains("KafkaRpcProperties"));
         assertTrue(kafkaRpcFile.contains("getFoo"));
         assertTrue(kafkaRpcFile.contains("getFooAsync"));

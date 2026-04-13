@@ -136,11 +136,12 @@ public class KafkaRpcProperties {
     }
 
     /**
-     * Build consumer Properties for a server: global base + service overrides. group.id is set by lifecycle.
+     * Build consumer Properties for a server: global base + service overrides + group.id.
      *
-     * @param serviceName key from kafka-rpc.service (e.g. greeter)
+     * @param serviceName  key from kafka-rpc.service (e.g. greeter)
+     * @param requestTopic Kafka topic the server consumes from; used as group.id suffix
      */
-    public Properties getConsumerPropertiesForServer(String serviceName) {
+    public Properties getConsumerPropertiesForServer(String serviceName, String requestTopic) {
         var p = baseConsumerProperties(true);
         if (serviceName != null && service != null) {
             var svc = service.get(serviceName);
@@ -148,6 +149,7 @@ public class KafkaRpcProperties {
                 svc.getConsumer().forEach(p::setProperty);
             }
         }
+        p.setProperty("group.id", serverGroupId + "-" + requestTopic);
         return p;
     }
 
@@ -156,7 +158,7 @@ public class KafkaRpcProperties {
         return baseProducerProperties();
     }
 
-    /** Global consumer base. For backward compatibility. Prefer getConsumerPropertiesForClient(name) / getConsumerPropertiesForServer(name). */
+    /** Global consumer base. For backward compatibility. Prefer getConsumerPropertiesForClient(name) / getConsumerPropertiesForServer(name, topic). */
     public Properties getConsumerProperties(boolean forServer) {
         var p = baseConsumerProperties(forServer);
         if (!forServer) {
@@ -281,6 +283,17 @@ public class KafkaRpcProperties {
             }
         }
         return Math.max(1, clientConsumerCount);
+    }
+
+    /** Poll interval for this service (ms). Uses service override or global default. */
+    public int getPollIntervalMsForService(String serviceName) {
+        if (serviceName != null && service != null) {
+            var svc = service.get(serviceName);
+            if (svc != null && svc.getPollIntervalMs() != null) {
+                return svc.getPollIntervalMs();
+            }
+        }
+        return pollIntervalMs;
     }
 
     /** Poll interval for this client (ms). Uses client override or global default. */

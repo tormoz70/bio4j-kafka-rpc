@@ -51,11 +51,6 @@ class KafkaRpcServerAutoConfigurationTest {
                 }
 
                 @Override
-                public String getRequestTopic() {
-                    return "greeter.request";
-                }
-
-                @Override
                 public Map<String, KafkaRpcServer.MethodHandler> getHandlers() {
                     return Map.of("Greeter/GetGreeting", (correlationId, request) -> new byte[0]);
                 }

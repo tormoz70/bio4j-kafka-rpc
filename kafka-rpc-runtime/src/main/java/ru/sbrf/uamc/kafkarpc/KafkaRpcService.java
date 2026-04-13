@@ -9,8 +9,6 @@ public interface KafkaRpcService {
     /** Service name used for config lookup (e.g. kafka-rpc.service.greeter). */
     String getServiceName();
 
-    String getRequestTopic();
-
     Map<String, KafkaRpcServer.MethodHandler> getHandlers();
 
     /** Server-streaming methods: method name -> handler. Default: none. */
