@@ -311,12 +311,12 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         } catch (java.util.concurrent.ExecutionException e) {
             throw new IOException(e.getCause());
         } catch (java.util.concurrent.TimeoutException e) {
-            pending.remove(correlationId);
             throw new TimeoutException("No response within " + timeoutMs + " ms for correlationId=" + correlationId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            pending.remove(correlationId);
             throw new IOException(e);
+        } finally {
+            pending.remove(correlationId);
         }
     }
 
@@ -351,7 +351,12 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         if (headers != null) {
             headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
         }
-        producer.send(record);
+        try {
+            producer.send(record).get();
+        } catch (Exception e) {
+            streamQueues.remove(correlationId);
+            throw new IOException("Failed to send stream request", e);
+        }
         String method = headers != null ? headers.get(KafkaRpcConstants.HEADER_METHOD) : "";
         Runnable onClose = () -> streamQueues.remove(correlationId);
         new StreamingCallImpl(correlationId, queue, this, method,

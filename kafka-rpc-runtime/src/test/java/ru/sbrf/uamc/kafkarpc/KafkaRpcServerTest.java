@@ -12,9 +12,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
 
 class KafkaRpcServerTest {
@@ -44,7 +46,7 @@ class KafkaRpcServerTest {
     }
 
     @Test
-    void processesRequestAndSendsReply() throws Exception {
+    void processesRequestAndSendsReply() {
         String correlationId = "corr-1";
         String method = "Service/Method";
         byte[] requestData = "request".getBytes();
@@ -67,20 +69,16 @@ class KafkaRpcServerTest {
         consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
                 org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
 
-        // Give server thread time to poll and process
-        Thread.sleep(200);
-
-        server.stop();
-        Thread.sleep(100);
-
-        assertEquals(1, producer.history().size());
-        var sentRecord = producer.history().get(0);
-        assertEquals(REPLY_TOPIC, sentRecord.topic());
-        assertArrayEquals(expectedResponse, sentRecord.value());
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            var sentRecord = producer.history().get(0);
+            assertEquals(REPLY_TOPIC, sentRecord.topic());
+            assertArrayEquals(expectedResponse, sentRecord.value());
+        });
     }
 
     @Test
-    void singleHandlerUsedWhenMethodNotSpecified() throws Exception {
+    void singleHandlerUsedWhenMethodNotSpecified() {
         String correlationId = "corr-2";
         byte[] requestData = "req".getBytes();
         byte[] expectedResponse = "resp".getBytes();
@@ -97,12 +95,10 @@ class KafkaRpcServerTest {
         consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
                 org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
 
-        Thread.sleep(200);
-        server.stop();
-        Thread.sleep(100);
-
-        assertEquals(1, producer.history().size());
-        assertArrayEquals(expectedResponse, producer.history().get(0).value());
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            assertArrayEquals(expectedResponse, producer.history().get(0).value());
+        });
     }
 
     @Test
@@ -116,10 +112,8 @@ class KafkaRpcServerTest {
 
         server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
         server.start();
-        Thread.sleep(200);
-        server.stop();
-        Thread.sleep(100);
 
-        assertEquals(0, producer.history().size());
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertEquals(0, producer.history().size()));
     }
 }

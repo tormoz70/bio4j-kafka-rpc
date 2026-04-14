@@ -49,15 +49,6 @@ public class KafkaRpcGenerator {
 
     static PluginProtos.CodeGeneratorResponse generate(PluginProtos.CodeGeneratorRequest request) {
         var builder = PluginProtos.CodeGeneratorResponse.newBuilder();
-        Map<String, String> packageByFile = new HashMap<>();
-
-        for (DescriptorProtos.FileDescriptorProto file : request.getProtoFileList()) {
-            String pkg = file.getPackage().isEmpty() ? "" : file.getPackage() + ".";
-            for (var dep : file.getDependencyList()) {
-                packageByFile.put(dep, packageByFile.getOrDefault(dep, ""));
-            }
-            packageByFile.put(file.getName(), pkg);
-        }
 
         for (String name : request.getFileToGenerateList()) {
             DescriptorProtos.FileDescriptorProto file = null;

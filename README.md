@@ -15,6 +15,7 @@
 | Модуль | Описание |
 |--------|----------|
 | `kafka-rpc-runtime` | Runtime: KafkaRpcChannel, KafkaRpcServer |
+| `kafka-rpc-spring-boot-starter` | Spring Boot автоконфигурация, KafkaRpcProperties, KafkaRpcChannelPool |
 | `kafka-rpc-protoc` | protoc-плагин для генерации кода |
 
 ## Настройка проекта в Gradle (клиент и сервер)
@@ -43,7 +44,7 @@ plugins {
 dependencies {
     implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
     implementation 'org.apache.kafka:kafka-clients:3.9.2'
-    implementation 'com.google.protobuf:protobuf-java:3.25.5'
+    implementation 'com.google.protobuf:protobuf-java:3.25.8'
 }
 ```
 
@@ -58,7 +59,7 @@ plugins {
 dependencies {
     implementation 'ru.sbrf.uamc:kafka-rpc-spring-boot-starter:0.1.0-SNAPSHOT'
     implementation 'org.apache.kafka:kafka-clients:3.9.2'
-    implementation 'com.google.protobuf:protobuf-java:3.25.5'
+    implementation 'com.google.protobuf:protobuf-java:3.25.8'
 }
 ```
 
@@ -100,7 +101,7 @@ tasks.register('prepareKafkaRpcProtocPluginScript') {
 }
 
 protobuf {
-    protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
+    protoc { artifact = "com.google.protobuf:protoc:3.25.8" }
     plugins {
         kafkaRpc { path = pluginExe.absolutePath }
     }
@@ -126,7 +127,7 @@ dependencies {
 }
 
 protobuf {
-    protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
+    protoc { artifact = "com.google.protobuf:protoc:3.25.8" }
     plugins {
         kafkaRpc { path = '<путь к исполняемому файлу protoc-gen-kafka-rpc>' }
     }
@@ -179,7 +180,7 @@ plugins {
 }
 
 protobuf {
-    protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
+    protoc { artifact = "com.google.protobuf:protoc:3.25.8" }
     plugins {
         kafkaRpc { path = '<path-to-protoc-gen-kafka-rpc>' }
     }

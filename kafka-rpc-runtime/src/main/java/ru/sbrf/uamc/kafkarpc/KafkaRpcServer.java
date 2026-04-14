@@ -221,6 +221,11 @@ public class KafkaRpcServer implements AutoCloseable {
             return;
         }
 
+        if (record.value() == null) {
+            log.warn("Dropping message with null body, correlationId={}", correlationId);
+            return;
+        }
+
         if (method != null && method.endsWith(KafkaRpcConstants.STREAM_HEALTHCHECK_SUFFIX)) {
             String streamId = KafkaRpcConstants.getHeader(record, KafkaRpcConstants.HEADER_STREAM_ID);
             if (streamId != null) {
@@ -275,6 +280,7 @@ public class KafkaRpcServer implements AutoCloseable {
         MethodHandler handler = method != null ? handlers.get(method) : null;
         if (handler == null) {
             if (handlers.size() == 1) {
+                log.debug("No handler for method={}, falling back to the single registered handler, correlationId={}", method, correlationId);
                 handler = handlers.values().iterator().next();
             } else {
                 log.warn("No handler for method: {}", method);
@@ -310,7 +316,8 @@ public class KafkaRpcServer implements AutoCloseable {
 
     private void sendErrorReply(String replyTopic, String key, String correlationId, String method, Exception error) {
         try {
-            String errorMessage = error.getClass().getName() + ": " + (error.getMessage() != null ? error.getMessage() : "");
+            log.error("RPC handler error for correlationId={}, method={}", correlationId, method, error);
+            String errorMessage = "Internal server error";
             ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, key, new byte[0]);
             reply.headers()
                     .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))

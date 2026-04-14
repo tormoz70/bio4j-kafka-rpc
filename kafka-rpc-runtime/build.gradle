@@ -11,4 +11,5 @@ dependencies {
     annotationProcessor "org.projectlombok:lombok:${rootProject.ext.lombokVersion}"
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testImplementation 'org.awaitility:awaitility:4.2.1'
 }
