@@ -267,6 +267,15 @@ kafka-rpc:
 
 ## 6. Kafka producer/consumer overrides
 
+### Значения по умолчанию starter'а
+
+Starter проставляет следующие безопасные дефолты поверх `bootstrap.servers` и сериализаторов:
+
+- Producer: `acks=all`, `enable.idempotence=true`, `retries=10`, `max.in.flight.requests.per.connection=5`, `request.timeout.ms=30000`, `delivery.timeout.ms=120000`, **`max.request.size=10485760` (10 MiB)**.
+- Consumer: `auto.offset.reset` (`earliest` для сервера, `latest` для клиента), **`max.partition.fetch.bytes=10485760` (10 MiB)**.
+
+Максимальный размер сообщения по умолчанию — 10 MiB. Чтобы реально пересылать сообщения больше 1 MiB, также увеличьте лимиты на брокере (`message.max.bytes`, `replica.fetch.max.bytes`) и на топике (`max.message.bytes`). Любой дефолт переопределяется через `kafka-rpc.producer.*` / `kafka-rpc.consumer.*` или per-client/per-service maps.
+
 ### 6.1 Глобальные настройки для всех
 
 ```yaml
@@ -275,9 +284,13 @@ kafka-rpc:
     acks: all
     linger.ms: "5"
     compression.type: lz4
+    # по умолчанию 10485760 (10 MiB); увеличьте/уменьшите при необходимости
+    max.request.size: "10485760"
   consumer:
     max.poll.records: "500"
     fetch.min.bytes: "1"
+    # по умолчанию 10485760 (10 MiB)
+    max.partition.fetch.bytes: "10485760"
 ```
 
 ### 6.2 Переопределение только для одного клиента

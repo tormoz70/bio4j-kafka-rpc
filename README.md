@@ -233,7 +233,7 @@ try (var channel = PooledKafkaRpcChannel.builder()
 [`docs/application-yml-configuration.md`](docs/application-yml-configuration.md)
 
 В `application.yml` под `kafka-rpc`:
-- **Общие настройки:** `bootstrap-servers`, `producer`, `consumer` — база для всех клиентов и серверов.
+- **Общие настройки:** `bootstrap-servers`, `producer`, `consumer` — база для всех клиентов и серверов. По умолчанию максимальный размер сообщения — 10 MiB (`producer.max.request.size` и `consumer.max.partition.fetch.bytes`); переопределяется через `kafka-rpc.producer.*` / `kafka-rpc.consumer.*` или per-client/per-service. Для сообщений больше 1 MiB также потребуется поднять лимиты на брокере (`message.max.bytes`, `replica.fetch.max.bytes`) и на топике (`max.message.bytes`).
 - **Стриминг (глобально):** `stream-healthcheck-interval-ms` (интервал хелсчека клиента, по умолчанию 5000), `stream-healthcheck-timeout-ms` (таймаут «стрим мёртв» на клиенте, 15000), `stream-server-idle-timeout-ms` (таймаут простоя стрима на сервере; задаётся только на клиенте, передаётся в обязательном заголовке при старте стрима; по умолчанию 20000).
 - **Клиенты:** `clients.<имя>` (имя = сервис в нижнем регистре, например `greeter`). Для каждого: `request-topic`, `reply-topic`, опционально `timeout-ms`, `stream-healthcheck-enabled`, `stream-healthcheck-interval-ms`, `stream-healthcheck-timeout-ms`, `stream-server-idle-timeout-ms` (передаётся серверу в заголовке), `producer`, `consumer` (переопределяют общие).
 - **Серверы (сервисы):** `service.<имя>`. Для каждого: `request-topic`, опционально `producer`, `consumer` (переопределяют общие).

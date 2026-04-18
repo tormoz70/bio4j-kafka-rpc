@@ -159,6 +159,7 @@ public class KafkaRpcProperties {
         p.put("max.in.flight.requests.per.connection", "5");
         p.put("request.timeout.ms", "30000");
         p.put("delivery.timeout.ms", "120000");
+        p.put("max.request.size", Integer.toString(KafkaRpcConstants.DEFAULT_MAX_MESSAGE_SIZE_BYTES));
         if (producer != null) {
             producer.forEach(p::setProperty);
         }
@@ -171,6 +172,7 @@ public class KafkaRpcProperties {
         p.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
         p.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer");
         p.put("auto.offset.reset", forServer ? "earliest" : "latest");
+        p.put("max.partition.fetch.bytes", Integer.toString(KafkaRpcConstants.DEFAULT_MAX_MESSAGE_SIZE_BYTES));
         if (consumer != null) {
             consumer.forEach(p::setProperty);
         }

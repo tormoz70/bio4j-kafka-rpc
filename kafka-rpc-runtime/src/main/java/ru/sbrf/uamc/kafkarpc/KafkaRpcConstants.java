@@ -38,6 +38,18 @@ public class KafkaRpcConstants {
     public static final int DEFAULT_POLL_INTERVAL_MS = 100;
     public static final int DEFAULT_STREAM_BUFFER_SIZE = 1024;
 
+    /**
+     * Default maximum Kafka message size (bytes) used by both producer and consumer.
+     * Applied as {@code max.request.size} for the producer and {@code max.partition.fetch.bytes}
+     * for the consumer. Overridable via {@code kafka-rpc.producer.*} / {@code kafka-rpc.consumer.*}
+     * (and per-client/per-service maps). Default: 10 MiB.
+     * <p>
+     * Note: the Kafka broker has its own limits ({@code message.max.bytes},
+     * {@code replica.fetch.max.bytes}). To actually send/receive messages up to this size,
+     * the broker (and topic) must be configured to accept them.
+     */
+    public static final int DEFAULT_MAX_MESSAGE_SIZE_BYTES = 10 * 1024 * 1024;
+
     /** Extract a string header value from a Kafka consumer record. Returns null if missing or empty. */
     public static String getHeader(ConsumerRecord<String, byte[]> record, String name) {
         var iter = record.headers().headers(name).iterator();
