@@ -83,6 +83,14 @@ class KafkaRpcGeneratorTest {
         assertTrue(providerFile.contains("getStub"));
         assertTrue(providerFile.contains("getAsyncStub"));
         assertTrue(providerFile.contains("@Component"));
+        assertTrue(providerFile.contains("getStub(String clientName)"),
+                "Provider must expose overloaded getStub(clientName)");
+        assertTrue(providerFile.contains("getAsyncStub(String clientName)"),
+                "Provider must expose overloaded getAsyncStub(clientName)");
+        assertTrue(providerFile.contains("return getStub(\"testService\")"),
+                "Default getStub() should delegate to getStub(defaultClientName)");
+        assertTrue(providerFile.contains("return getAsyncStub(\"testService\")"),
+                "Default getAsyncStub() should delegate to getAsyncStub(defaultClientName)");
     }
 
     @Test
