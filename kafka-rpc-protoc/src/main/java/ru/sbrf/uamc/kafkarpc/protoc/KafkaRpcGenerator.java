@@ -50,6 +50,22 @@ public class KafkaRpcGenerator {
     static PluginProtos.CodeGeneratorResponse generate(PluginProtos.CodeGeneratorRequest request) {
         var builder = PluginProtos.CodeGeneratorResponse.newBuilder();
 
+        // Collect proto-package -> java-package from every .proto visible to the plugin
+        // (files to generate + their transitive dependencies). Needed to resolve types
+        // imported from other files that declare their own option java_package.
+        Map<String, String> protoPkgToJavaPkg = new HashMap<>();
+        for (DescriptorProtos.FileDescriptorProto f : request.getProtoFileList()) {
+            String protoPkg = f.getPackage();
+            if (protoPkg == null) continue;
+            String jp = f.getOptions().getJavaPackage();
+            if (jp.isEmpty()) {
+                jp = toJavaPackage(protoPkg);
+            }
+            // First declaration wins (deterministic). If the same proto package is declared
+            // in several files with different java_package, the conflict is a user error.
+            protoPkgToJavaPkg.putIfAbsent(protoPkg, jp);
+        }
+
         for (String name : request.getFileToGenerateList()) {
             DescriptorProtos.FileDescriptorProto file = null;
             for (DescriptorProtos.FileDescriptorProto f : request.getProtoFileList()) {
@@ -68,7 +84,7 @@ public class KafkaRpcGenerator {
 
             for (DescriptorProtos.ServiceDescriptorProto service : file.getServiceList()) {
                 String className = service.getName() + "KafkaRpc";
-                JavaFile javaFile = generateService(file, service, outPkg, javaPackage);
+                JavaFile javaFile = generateService(file, service, outPkg, javaPackage, protoPkgToJavaPkg);
                 builder.addFile(PluginProtos.CodeGeneratorResponse.File.newBuilder()
                         .setName(javaPackage.replace('.', '/') + "/" + className + ".java")
                         .setContent(javaFile.toString())
@@ -91,7 +107,8 @@ public class KafkaRpcGenerator {
 
     private static JavaFile generateService(DescriptorProtos.FileDescriptorProto file,
                                            DescriptorProtos.ServiceDescriptorProto service,
-                                           String outPkg, String javaPackage) {
+                                           String outPkg, String javaPackage,
+                                           Map<String, String> protoPkgToJavaPkg) {
         String mainClassName = service.getName() + "KafkaRpc";
 
         TypeSpec.Builder mainType = TypeSpec.classBuilder(mainClassName)
@@ -106,17 +123,17 @@ public class KafkaRpcGenerator {
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             if (isStreamMethod(method)) {
-                mainType.addType(buildStreamProcessorClass(method, file, javaPackage));
+                mainType.addType(buildStreamProcessorClass(method, file, javaPackage, protoPkgToJavaPkg));
             }
         }
 
-        TypeSpec stubType = buildStubClass(file, service, javaPackage);
+        TypeSpec stubType = buildStubClass(file, service, javaPackage, protoPkgToJavaPkg);
         mainType.addType(stubType);
 
-        TypeSpec asyncStubType = buildAsyncStubClass(file, service, javaPackage);
+        TypeSpec asyncStubType = buildAsyncStubClass(file, service, javaPackage, protoPkgToJavaPkg);
         mainType.addType(asyncStubType);
 
-        TypeSpec serviceBaseType = buildServiceBaseClass(file, service, javaPackage);
+        TypeSpec serviceBaseType = buildServiceBaseClass(file, service, javaPackage, protoPkgToJavaPkg);
         mainType.addType(serviceBaseType);
 
         return JavaFile.builder(outPkg, mainType.build())
@@ -177,8 +194,9 @@ public class KafkaRpcGenerator {
 
     private static TypeSpec buildStreamProcessorClass(DescriptorProtos.MethodDescriptorProto method,
                                                       DescriptorProtos.FileDescriptorProto file,
-                                                      String javaPackage) {
-        TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                                                      String javaPackage,
+                                                      Map<String, String> protoPkgToJavaPkg) {
+        TypeName outputType = typeName(method.getOutputType(), file, javaPackage, protoPkgToJavaPkg);
         String processorClassName = method.getName() + "Processor";
         return TypeSpec.classBuilder(processorClassName)
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.ABSTRACT)
@@ -194,7 +212,8 @@ public class KafkaRpcGenerator {
 
     private static TypeSpec buildStubClass(DescriptorProtos.FileDescriptorProto file,
                                            DescriptorProtos.ServiceDescriptorProto service,
-                                           String javaPackage) {
+                                           String javaPackage,
+                                           Map<String, String> protoPkgToJavaPkg) {
         TypeSpec.Builder stub = TypeSpec.classBuilder("Stub")
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
                 .addJavadoc("Blocking stub.")
@@ -206,7 +225,7 @@ public class KafkaRpcGenerator {
                         .build());
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
-            TypeName inputType = typeName(method.getInputType(), file, javaPackage);
+            TypeName inputType = typeName(method.getInputType(), file, javaPackage, protoPkgToJavaPkg);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
 
@@ -221,7 +240,7 @@ public class KafkaRpcGenerator {
                         .build();
                 stub.addMethod(onewayMethod);
             } else if (isStreamMethod(method)) {
-                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage, protoPkgToJavaPkg);
                 String processorClassName = method.getName() + "Processor";
                 ClassName processorType = ClassName.get(javaPackage, service.getName() + "KafkaRpc", processorClassName);
                 String streamOrderedValue = isOrderedStream(method) ? "true" : "false";
@@ -237,7 +256,7 @@ public class KafkaRpcGenerator {
                         .build();
                 stub.addMethod(streamMethod);
             } else {
-                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage, protoPkgToJavaPkg);
                 MethodSpec methodBuilder = MethodSpec.methodBuilder(methodName)
                         .addModifiers(Modifier.PUBLIC)
                         .returns(outputType)
@@ -258,7 +277,8 @@ public class KafkaRpcGenerator {
 
     private static TypeSpec buildAsyncStubClass(DescriptorProtos.FileDescriptorProto file,
                                                 DescriptorProtos.ServiceDescriptorProto service,
-                                                String javaPackage) {
+                                                String javaPackage,
+                                                Map<String, String> protoPkgToJavaPkg) {
         TypeSpec.Builder asyncStub = TypeSpec.classBuilder("AsyncStub")
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
                 .addJavadoc("Async stub (CompletableFuture).")
@@ -270,7 +290,7 @@ public class KafkaRpcGenerator {
                         .build());
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
-            TypeName inputType = typeName(method.getInputType(), file, javaPackage);
+            TypeName inputType = typeName(method.getInputType(), file, javaPackage, protoPkgToJavaPkg);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
 
@@ -285,7 +305,7 @@ public class KafkaRpcGenerator {
                         .build();
                 asyncStub.addMethod(asyncOneway);
             } else if (isStreamMethod(method)) {
-                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage, protoPkgToJavaPkg);
                 String processorClassName = method.getName() + "Processor";
                 ClassName processorType = ClassName.get(javaPackage, service.getName() + "KafkaRpc", processorClassName);
                 TypeName futureVoid = ParameterizedTypeName.get(COMPLETABLE_FUTURE, ClassName.get(Void.class));
@@ -305,7 +325,7 @@ public class KafkaRpcGenerator {
                         .build();
                 asyncStub.addMethod(asyncStreamMethod);
             } else {
-                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage, protoPkgToJavaPkg);
                 TypeName futureOutputType = ParameterizedTypeName.get(COMPLETABLE_FUTURE, outputType);
                 MethodSpec asyncMethod = MethodSpec.methodBuilder(methodName + "Async")
                         .addModifiers(Modifier.PUBLIC)
@@ -323,7 +343,8 @@ public class KafkaRpcGenerator {
 
     private static TypeSpec buildServiceBaseClass(DescriptorProtos.FileDescriptorProto file,
                                                   DescriptorProtos.ServiceDescriptorProto service,
-                                                  String javaPackage) {
+                                                  String javaPackage,
+                                                  Map<String, String> protoPkgToJavaPkg) {
         String defaultServiceName = lowerFirst(service.getName());
         TypeSpec.Builder serviceBase = TypeSpec.classBuilder("ServiceBase")
                 .addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT, Modifier.STATIC)
@@ -366,7 +387,7 @@ public class KafkaRpcGenerator {
                 .add("  switch (method) {\n");
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             if (isStreamMethod(method)) continue;
-            TypeName inputType = typeName(method.getInputType(), file, javaPackage);
+            TypeName inputType = typeName(method.getInputType(), file, javaPackage, protoPkgToJavaPkg);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
             switchBlock.add("    case $S -> {\n", fullMethod);
@@ -409,7 +430,7 @@ public class KafkaRpcGenerator {
                 .add("  switch (method) {\n");
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
             if (!isStreamMethod(method)) continue;
-            TypeName inputType = typeName(method.getInputType(), file, javaPackage);
+            TypeName inputType = typeName(method.getInputType(), file, javaPackage, protoPkgToJavaPkg);
             String methodName = lowerFirst(method.getName());
             String fullMethod = service.getName() + "/" + method.getName();
             streamSwitchBlock.add("    case $S -> {\n", fullMethod);
@@ -431,7 +452,7 @@ public class KafkaRpcGenerator {
                 .build());
 
         for (DescriptorProtos.MethodDescriptorProto method : service.getMethodList()) {
-            TypeName inputType = typeName(method.getInputType(), file, javaPackage);
+            TypeName inputType = typeName(method.getInputType(), file, javaPackage, protoPkgToJavaPkg);
             String methodName = lowerFirst(method.getName());
             if (isOneway(method)) {
                 serviceBase.addMethod(MethodSpec.methodBuilder(methodName)
@@ -448,7 +469,7 @@ public class KafkaRpcGenerator {
                         .addException(IO_EXCEPTION)
                         .build());
             } else {
-                TypeName outputType = typeName(method.getOutputType(), file, javaPackage);
+                TypeName outputType = typeName(method.getOutputType(), file, javaPackage, protoPkgToJavaPkg);
                 serviceBase.addMethod(MethodSpec.methodBuilder(methodName)
                         .addModifiers(Modifier.PROTECTED, Modifier.ABSTRACT)
                         .returns(outputType)
@@ -460,8 +481,9 @@ public class KafkaRpcGenerator {
         return serviceBase.build();
     }
 
-    private static TypeName typeName(String protoType, DescriptorProtos.FileDescriptorProto file, String javaPackage) {
-        String resolved = resolveType(protoType, file, javaPackage);
+    private static TypeName typeName(String protoType, DescriptorProtos.FileDescriptorProto file,
+                                     String javaPackage, Map<String, String> protoPkgToJavaPkg) {
+        String resolved = resolveType(protoType, file, javaPackage, protoPkgToJavaPkg);
         int lastDot = resolved.lastIndexOf('.');
         if (lastDot < 0) {
             return ClassName.get(javaPackage, resolved);
@@ -469,18 +491,24 @@ public class KafkaRpcGenerator {
         return ClassName.get(resolved.substring(0, lastDot), resolved.substring(lastDot + 1));
     }
 
-    private static String resolveType(String protoType, DescriptorProtos.FileDescriptorProto file, String javaPackage) {
+    private static String resolveType(String protoType, DescriptorProtos.FileDescriptorProto file,
+                                      String javaPackage, Map<String, String> protoPkgToJavaPkg) {
         if (protoType.startsWith(".")) {
             protoType = protoType.substring(1);
         }
         String shortName = protoType.contains(".") ? protoType.substring(protoType.lastIndexOf('.') + 1) : protoType;
-        String protoPkg = file.getPackage();
-        if (protoType.startsWith(protoPkg) || (protoPkg.isEmpty() && !protoType.contains("."))) {
+        String protoPkg = protoType.contains(".") ? protoType.substring(0, protoType.lastIndexOf('.')) : "";
+        // Same file's proto package: use this file's java_package directly.
+        if (protoPkg.equals(file.getPackage())) {
             return javaPackage + "." + shortName;
         }
-        if (protoType.contains(".")) {
-            String pkg = protoType.substring(0, protoType.lastIndexOf('.'));
-            return pkg.replace('.', '_') + "." + shortName;
+        if (!protoPkg.isEmpty()) {
+            // Prefer the java_package declared by the .proto file that owns this proto package.
+            String mappedJavaPkg = protoPkgToJavaPkg == null ? null : protoPkgToJavaPkg.get(protoPkg);
+            if (mappedJavaPkg != null && !mappedJavaPkg.isEmpty()) {
+                return mappedJavaPkg + "." + shortName;
+            }
+            return toJavaPackage(protoPkg) + "." + shortName;
         }
         return javaPackage + "." + shortName;
     }
