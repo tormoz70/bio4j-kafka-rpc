@@ -2,8 +2,11 @@ package ru.sbrf.uamc.kafkarpc;
 
 import lombok.experimental.UtilityClass;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.common.header.Header;
+import org.apache.kafka.common.header.Headers;
 
 import java.nio.charset.StandardCharsets;
+import java.util.StringJoiner;
 
 /** Header names, conventions, and utilities for Kafka RPC. */
 @UtilityClass
@@ -58,5 +61,30 @@ public class KafkaRpcConstants {
             return v != null && v.length > 0 ? new String(v, StandardCharsets.UTF_8) : null;
         }
         return null;
+    }
+
+    /** Convert Kafka headers to compact debug string. */
+    public static String headersToDebugString(Headers headers) {
+        StringJoiner joiner = new StringJoiner(", ", "{", "}");
+        for (Header header : headers) {
+            byte[] value = header.value();
+            String textValue = value != null ? new String(value, StandardCharsets.UTF_8) : "null";
+            joiner.add(header.key() + "=" + textValue);
+        }
+        return joiner.toString();
+    }
+
+    /** Convert payload to compact debug string with UTF-8 preview. */
+    public static String payloadToDebugString(byte[] payload) {
+        if (payload == null) {
+            return "null";
+        }
+        String text = new String(payload, StandardCharsets.UTF_8)
+                .replace("\r", "\\r")
+                .replace("\n", "\\n");
+        if (text.length() > 256) {
+            text = text.substring(0, 256) + "...(truncated)";
+        }
+        return "len=" + payload.length + ", utf8=\"" + text + "\"";
     }
 }

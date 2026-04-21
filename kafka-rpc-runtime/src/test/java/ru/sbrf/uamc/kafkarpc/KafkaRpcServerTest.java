@@ -78,13 +78,12 @@ class KafkaRpcServerTest {
     }
 
     @Test
-    void singleHandlerUsedWhenMethodNotSpecified() {
+    void messageWithoutMethodIsDroppedEvenWithSingleHandler() {
         String correlationId = "corr-2";
         byte[] requestData = "req".getBytes();
-        byte[] expectedResponse = "resp".getBytes();
 
         var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
-                "OnlyMethod", (cid, req) -> expectedResponse);
+                "OnlyMethod", (cid, req) -> "resp".getBytes());
 
         server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
         server.start();
@@ -95,10 +94,8 @@ class KafkaRpcServerTest {
         consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
                 org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
 
-        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
-            assertEquals(1, producer.history().size());
-            assertArrayEquals(expectedResponse, producer.history().get(0).value());
-        });
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertEquals(0, producer.history().size()));
     }
 
     @Test

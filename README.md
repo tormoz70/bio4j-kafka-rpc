@@ -209,6 +209,8 @@ server.start();
 Reply topic is always taken from the client request header; the server does not need it in config.
 Service name defaults to the proto service name (e.g. `greeter` for `service Greeter`); the request topic is resolved from `kafka-rpc.service.<name>.request-topic` by the auto-configuration.
 
+Важно: сервер обрабатывает только сообщения с известным `kafka-rpc-method`. Если метод отсутствует или не зарегистрирован у данного сервиса, сообщение игнорируется и пишется `warn` в лог. Fallback на «единственный handler» не используется.
+
 ### 5. Клиент
 
 Для каждого сервиса используйте pooled-канал из `KafkaRpcChannelPool` (Spring) или создавайте `PooledKafkaRpcChannel` вручную (без Spring).
@@ -237,6 +239,8 @@ try (var channel = PooledKafkaRpcChannel.builder()
 - **Стриминг (глобально):** `stream-healthcheck-interval-ms` (интервал хелсчека клиента, по умолчанию 5000), `stream-healthcheck-timeout-ms` (таймаут «стрим мёртв» на клиенте, 15000), `stream-server-idle-timeout-ms` (таймаут простоя стрима на сервере; задаётся только на клиенте, передаётся в обязательном заголовке при старте стрима; по умолчанию 20000).
 - **Клиенты:** `clients.<имя>` (имя = сервис в нижнем регистре, например `greeter`). Для каждого: `request-topic`, `reply-topic`, опционально `timeout-ms`, `stream-healthcheck-enabled`, `stream-healthcheck-interval-ms`, `stream-healthcheck-timeout-ms`, `stream-server-idle-timeout-ms` (передаётся серверу в заголовке), `producer`, `consumer` (переопределяют общие).
 - **Серверы (сервисы):** `service.<имя>`. Для каждого: `request-topic`, опционально `producer`, `consumer` (переопределяют общие).
+
+Роутинг по топикам и `group.id` — ответственность прикладного разработчика. При общей паре топиков для нескольких связок client/service необходимо самостоятельно исключить пересечение консьюмер-групп и «чужие» сообщения.
 
 Пример с двумя клиентами и переопределением только для одного:
 

@@ -1,6 +1,7 @@
 package ru.sbrf.uamc.kafkarpc.spring;
 
 import ru.sbrf.uamc.kafkarpc.KafkaRpcServer;
+import ru.sbrf.uamc.kafkarpc.KafkaRpcLogEvents;
 import ru.sbrf.uamc.kafkarpc.KafkaRpcService;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -45,6 +46,7 @@ public class KafkaRpcServerAutoConfiguration {
                 var producerConfig = properties.getProducerPropertiesForServer(serviceName);
                 int consumerCount = properties.getServerConsumerCountForService(serviceName);
                 int pollIntervalMs = properties.getPollIntervalMsForService(serviceName);
+                String consumerGroup = consumerConfig.getProperty("group.id", "<undefined>");
 
                 var server = new KafkaRpcServer(
                         consumerConfig, producerConfig,
@@ -55,7 +57,8 @@ public class KafkaRpcServerAutoConfiguration {
                         pollIntervalMs);
                 servers.add(server);
                 server.start();
-                log.info("Started Kafka RPC server for {} (service {})", requestTopic, serviceName);
+                log.info("{} service={} topic={} group={} consumerCount={}",
+                        KafkaRpcLogEvents.SERVER_LIFECYCLE_STARTED, serviceName, requestTopic, consumerGroup, consumerCount);
             }
         }
 

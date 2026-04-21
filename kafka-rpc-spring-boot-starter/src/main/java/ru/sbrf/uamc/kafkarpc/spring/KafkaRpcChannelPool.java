@@ -1,6 +1,7 @@
 package ru.sbrf.uamc.kafkarpc.spring;
 
 import ru.sbrf.uamc.kafkarpc.KafkaRpcChannel;
+import ru.sbrf.uamc.kafkarpc.KafkaRpcLogEvents;
 import ru.sbrf.uamc.kafkarpc.PooledKafkaRpcChannel;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -46,7 +47,9 @@ public class KafkaRpcChannelPool {
         int consumerCount = properties.getClientConsumerCountForClient(clientName);
         int pollIntervalMs = properties.getPollIntervalMsForClient(clientName);
         int streamBufferSize = properties.getStreamBufferSizeForClient(clientName);
-        log.info("Creating pooled RPC channel for client {} (consumerCount={})", clientName, consumerCount);
+        String consumerGroup = consumerConfig.getProperty("group.id", "<undefined>");
+        log.info("{} role=client client={} requestTopic={} replyTopic={} group={} consumerCount={}",
+                KafkaRpcLogEvents.CHANNEL_CREATED, clientName, requestTopic, replyTopic, consumerGroup, consumerCount);
         return new PooledKafkaRpcChannel(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs,
                 streamHealthcheckEnabled, streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamServerIdleTimeoutMs,
                 consumerCount, pollIntervalMs, streamBufferSize);
@@ -58,7 +61,7 @@ public class KafkaRpcChannelPool {
             try {
                 ch.close();
             } catch (Exception e) {
-                log.warn("Error closing channel for {}: {}", name, e.getMessage());
+                log.warn("{} role=client client={} error={}", KafkaRpcLogEvents.CHANNEL_CLOSE_FAILED, name, e.getMessage());
             }
         });
         channels.clear();

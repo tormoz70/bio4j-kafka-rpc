@@ -49,6 +49,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final long streamServerIdleTimeoutMs;
     private final int pollIntervalMs;
     private final int streamBufferSize;
+    private final String consumerGroupId;
     private final ConcurrentHashMap<String, CompletableFuture<byte[]>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BlockingQueue<StreamChunk>> streamQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -122,6 +123,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         consBase.putAll(consumerConfig);
         consBase.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
         consBase.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
+        this.consumerGroupId = consBase.getProperty("group.id", "<undefined>");
         this.consumerConfigBase = consBase;
         int count = Math.max(1, consumerCount);
         for (int i = 0; i < count; i++) {
@@ -149,6 +151,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this.streamBufferSize = KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE;
         this.producer = producer;
         this.consumerConfigBase = new Properties();
+        this.consumerGroupId = "<test>";
 
         for (int i = 0; i < consumers.size(); i++) {
             Consumer<String, byte[]> consumer = consumers.get(i);
@@ -210,17 +213,21 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 cons.putAll(consumerConfigBase);
                 consumer = new KafkaConsumer<>(cons);
                 consumer.subscribe(Collections.singletonList(replyTopic));
+                log.info("{} role=client index={} topic={} group={}",
+                        KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, consumerGroupId);
                 backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
                 runConsumer(consumer);
             } catch (WakeupException e) {
                 if (!closed.get()) {
-                    log.warn("Pool consumer {} wakeup for {}, recreating", consumerIndex, replyTopic);
+                    log.warn("{} role=client reason=wakeup index={} topic={} group={}",
+                            KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId);
                     sleepRecoveryBackoff(backoffMs);
                     backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
                 }
             } catch (Exception e) {
                 if (!closed.get()) {
-                    log.warn("Pool consumer {} failed for {}, recreating in {} ms", consumerIndex, replyTopic, backoffMs, e);
+                    log.warn("{} role=client reason=failure index={} topic={} group={} backoffMs={}",
+                            KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId, backoffMs, e);
                     sleepRecoveryBackoff(backoffMs);
                     backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
                 }
@@ -237,6 +244,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofMillis(pollIntervalMs));
             for (ConsumerRecord<String, byte[]> r : records) {
                 String correlationId = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_CORRELATION_ID);
+                if (log.isDebugEnabled()) {
+                    log.debug("{} role=client topic={} key={} headers={} payload={}",
+                            KafkaRpcLogEvents.RECEIVE,
+                            replyTopic,
+                            r.key(),
+                            KafkaRpcConstants.headersToDebugString(r.headers()),
+                            KafkaRpcConstants.payloadToDebugString(r.value()));
+                }
                 if (correlationId == null) continue;
 
                 String errorMsg = KafkaRpcConstants.getHeader(r, KafkaRpcConstants.HEADER_ERROR);
@@ -301,6 +316,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             if (headers != null) {
                 headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
             }
+            if (log.isDebugEnabled()) {
+                log.debug("{} role=client kind=request topic={} key={} headers={} payload={}",
+                        KafkaRpcLogEvents.SEND,
+                        requestTopic,
+                        correlationId,
+                        KafkaRpcConstants.headersToDebugString(record.headers()),
+                        KafkaRpcConstants.payloadToDebugString(requestBytes));
+            }
             producer.send(record, (metadata, exception) -> {
                 if (exception != null) {
                     future.completeExceptionally(new IOException("Failed to send request", exception));
@@ -332,6 +355,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         if (headers != null) {
             headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
         }
+        if (log.isDebugEnabled()) {
+            log.debug("{} role=client kind=oneway topic={} key={} headers={} payload={}",
+                    KafkaRpcLogEvents.SEND,
+                    requestTopic,
+                    correlationId,
+                    KafkaRpcConstants.headersToDebugString(record.headers()),
+                    KafkaRpcConstants.payloadToDebugString(requestBytes));
+        }
         try {
             producer.send(record).get();
         } catch (Exception e) {
@@ -350,6 +381,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         record.headers().add(KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS, String.valueOf(streamServerIdleTimeoutMs).getBytes(StandardCharsets.UTF_8));
         if (headers != null) {
             headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("{} role=client kind=stream-request topic={} key={} headers={} payload={}",
+                    KafkaRpcLogEvents.SEND,
+                    requestTopic,
+                    correlationId,
+                    KafkaRpcConstants.headersToDebugString(record.headers()),
+                    KafkaRpcConstants.payloadToDebugString(requestBytes));
         }
         try {
             producer.send(record).get();
@@ -379,6 +418,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 .add(KafkaRpcConstants.HEADER_REPLY_TOPIC, replyTopic.getBytes(StandardCharsets.UTF_8));
         if (headers != null) {
             headers.forEach((k, v) -> record.headers().add(k, v != null ? v.getBytes(StandardCharsets.UTF_8) : new byte[0]));
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("{} role=client kind=async-request topic={} key={} headers={} payload={}",
+                    KafkaRpcLogEvents.SEND,
+                    requestTopic,
+                    correlationId,
+                    KafkaRpcConstants.headersToDebugString(record.headers()),
+                    KafkaRpcConstants.payloadToDebugString(requestBytes));
         }
         producer.send(record, (metadata, exception) -> {
             if (exception != null) {
