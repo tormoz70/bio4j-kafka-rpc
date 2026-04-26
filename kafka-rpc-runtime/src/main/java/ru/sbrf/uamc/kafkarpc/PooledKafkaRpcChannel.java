@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.LongAdder;
 
 import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
@@ -48,6 +49,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final boolean streamHealthcheckEnabled;
     private final int streamHealthcheckIntervalMs;
     private final int streamHealthcheckTimeoutMs;
+    private final int streamHealthcheckMaxFailures;
     private final long streamServerIdleTimeoutMs;
     private final int pollIntervalMs;
     private final int streamBufferSize;
@@ -59,12 +61,16 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final Properties consumerConfigBase;
     private final ConcurrentHashMap<String, Long> streamLastActivity = new ConcurrentHashMap<>();
     private final CountDownLatch consumerReadyLatch;
+    private final LongAdder duplicateCorrelationIdCount = new LongAdder();
+    private final LongAdder requestTimeoutCount = new LongAdder();
+    private final LongAdder streamErrorCount = new LongAdder();
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
                                  String requestTopic, String replyTopic, int timeoutMs) throws InterruptedException {
         this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, true,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
+                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES,
                 KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS, 1,
                 KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS, KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE);
     }
@@ -75,6 +81,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS,
                 KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS,
+                KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES,
                 KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS, 1,
                 KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS, KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE);
     }
@@ -85,7 +92,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                  int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
                                  long streamServerIdleTimeoutMs) throws InterruptedException {
         this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
-                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamServerIdleTimeoutMs, 1,
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES,
+                streamServerIdleTimeoutMs, 1,
                 KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS, KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE);
     }
 
@@ -96,7 +104,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                  long streamServerIdleTimeoutMs,
                                  int consumerCount) throws InterruptedException {
         this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
-                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamServerIdleTimeoutMs, consumerCount,
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES,
+                streamServerIdleTimeoutMs, consumerCount,
                 KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS, KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE);
     }
 
@@ -104,6 +113,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                  String requestTopic, String replyTopic, int timeoutMs,
                                  boolean streamHealthcheckEnabled,
                                  int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
+                                 int streamHealthcheckMaxFailures,
                                  long streamServerIdleTimeoutMs,
                                  int consumerCount,
                                  int pollIntervalMs, int streamBufferSize) throws InterruptedException {
@@ -114,6 +124,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this.streamHealthcheckEnabled = streamHealthcheckEnabled;
         this.streamHealthcheckIntervalMs = streamHealthcheckIntervalMs;
         this.streamHealthcheckTimeoutMs = streamHealthcheckTimeoutMs;
+        this.streamHealthcheckMaxFailures = Math.max(1, streamHealthcheckMaxFailures);
         this.streamServerIdleTimeoutMs = streamServerIdleTimeoutMs;
         this.pollIntervalMs = pollIntervalMs;
         this.streamBufferSize = streamBufferSize;
@@ -165,6 +176,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this.streamHealthcheckEnabled = true;
         this.streamHealthcheckIntervalMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS;
         this.streamHealthcheckTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
+        this.streamHealthcheckMaxFailures = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES;
         this.streamServerIdleTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
         this.pollIntervalMs = pollIntervalMs;
         this.streamBufferSize = KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE;
@@ -201,6 +213,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         private boolean streamHealthcheckEnabled = true;
         private int streamHealthcheckIntervalMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS;
         private int streamHealthcheckTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
+        private int streamHealthcheckMaxFailures = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES;
         private long streamServerIdleTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
         private int consumerCount = 1;
         private int pollIntervalMs = KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS;
@@ -214,6 +227,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         public Builder streamHealthcheckEnabled(boolean enabled) { this.streamHealthcheckEnabled = enabled; return this; }
         public Builder streamHealthcheckIntervalMs(int ms) { this.streamHealthcheckIntervalMs = ms; return this; }
         public Builder streamHealthcheckTimeoutMs(int ms) { this.streamHealthcheckTimeoutMs = ms; return this; }
+        public Builder streamHealthcheckMaxFailures(int value) { this.streamHealthcheckMaxFailures = value; return this; }
         public Builder streamServerIdleTimeoutMs(long ms) { this.streamServerIdleTimeoutMs = ms; return this; }
         public Builder consumerCount(int count) { this.consumerCount = count; return this; }
         public Builder pollIntervalMs(int ms) { this.pollIntervalMs = ms; return this; }
@@ -226,7 +240,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             if (replyTopic == null) throw new IllegalStateException("replyTopic is required");
             return new PooledKafkaRpcChannel(producerConfig, consumerConfig, requestTopic, replyTopic,
                     timeoutMs, streamHealthcheckEnabled, streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs,
-                    streamServerIdleTimeoutMs, consumerCount, pollIntervalMs, streamBufferSize);
+                    streamHealthcheckMaxFailures, streamServerIdleTimeoutMs, consumerCount, pollIntervalMs, streamBufferSize);
         }
     }
 
@@ -256,7 +270,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
                 runConsumer(consumer);
             } catch (WakeupException e) {
-                log.debug("%s --- WakeupException catch!".formatted(KafkaRpcLogEvents.RECEIVE), e);
+                log.debug("{} --- WakeupException catch", KafkaRpcLogEvents.RECEIVE, e);
                 if (!closed.get()) {
                     log.warn("{} role=client reason=wakeup index={} topic={} group={}",
                             KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId);
@@ -264,7 +278,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                     backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
                 }
             } catch (Exception e) {
-                log.debug("%s --- Exception catch!".formatted(KafkaRpcLogEvents.RECEIVE), e);
+                log.debug("{} --- Exception catch", KafkaRpcLogEvents.RECEIVE, e);
                 if (!closed.get()) {
                     log.warn("{} role=client reason=failure index={} topic={} group={} backoffMs={}",
                             KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId, backoffMs, e);
@@ -311,6 +325,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                         streamLastActivity.put(correlationId, System.currentTimeMillis());
                         if (errorMsg != null) {
                             log.debug("{} --- try processing1 error: {}", KafkaRpcLogEvents.RECEIVE, errorMsg);
+                            streamErrorCount.increment();
                             sq.offer(new StreamChunk.Poison(new IOException("Server error: " + errorMsg)));
                             streamQueues.remove(correlationId);
                             streamLastActivity.remove(correlationId);
@@ -344,7 +359,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                         }
                     }
                 } catch (Exception e) {
-                    log.warn("Unexpected exception in runConsumer! Lets continue...".formatted(KafkaRpcLogEvents.RECEIVE), e);
+                    log.warn("{} role=client reason=unexpected-consumer-exception topic={}",
+                            KafkaRpcLogEvents.RECEIVE, replyTopic, e);
                 }
             }
         }
@@ -368,6 +384,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 if (ts != null && now - ts > timeoutMs * 2L) {
                     log.warn("{} Cleaning up stale pending request: {}", KafkaRpcLogEvents.CHANNEL_CLEANUP, id);
                     pending.remove(id, future);
+                    pendingTimestamps.remove(id);
                     future.completeExceptionally(new TimeoutException("Stale request cleanup"));
                 }
             }
@@ -408,9 +425,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     @Override
     public byte[] request(String correlationId, byte[] requestBytes, Map<String, String> headers)
             throws IOException, TimeoutException {
-        CompletableFuture<byte[]> future = new CompletableFuture<>();
-        pending.put(correlationId, future);
-        pendingTimestamps.put(correlationId, System.currentTimeMillis());
+        CompletableFuture<byte[]> future = registerPendingOrThrow(correlationId);
 
         try {
             ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
@@ -438,6 +453,9 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         } catch (java.util.concurrent.ExecutionException e) {
             throw new IOException(e.getCause());
         } catch (java.util.concurrent.TimeoutException e) {
+            requestTimeoutCount.increment();
+            log.warn("{} role=client correlationId={} topic={} timeoutMs={}",
+                    KafkaRpcLogEvents.REQUEST_TIMEOUT, correlationId, requestTopic, timeoutMs);
             throw new TimeoutException("No response within " + timeoutMs + " ms for correlationId=" + correlationId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -504,7 +522,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         String method = headers != null ? headers.get(KafkaRpcConstants.HEADER_METHOD) : "";
         Runnable onClose = () -> streamQueues.remove(correlationId);
         new StreamingCallImpl(correlationId, queue, this, method,
-                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckEnabled, processor, onClose);
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckEnabled,
+                streamHealthcheckMaxFailures, processor, onClose);
     }
 
     @Override
@@ -514,9 +533,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
     @Override
     public CompletableFuture<byte[]> requestAsync(String correlationId, byte[] requestBytes, Map<String, String> headers) {
-        CompletableFuture<byte[]> future = new CompletableFuture<>();
-        pending.put(correlationId, future);
-        pendingTimestamps.put(correlationId, System.currentTimeMillis());
+        CompletableFuture<byte[]> future;
+        try {
+            future = registerPendingOrThrow(correlationId);
+        } catch (IOException duplicateException) {
+            CompletableFuture<byte[]> failed = new CompletableFuture<>();
+            failed.completeExceptionally(duplicateException);
+            return failed;
+        }
 
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
         record.headers()
@@ -541,9 +565,32 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
         return future.orTimeout(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
                 .whenComplete((v, t) -> {
+                    if (t instanceof TimeoutException) {
+                        requestTimeoutCount.increment();
+                        log.warn("{} role=client correlationId={} topic={} timeoutMs={}",
+                                KafkaRpcLogEvents.REQUEST_TIMEOUT, correlationId, requestTopic, timeoutMs);
+                    }
                     pending.remove(correlationId);
                     pendingTimestamps.remove(correlationId);
                 });
+    }
+
+    private CompletableFuture<byte[]> registerPendingOrThrow(String correlationId) throws IOException {
+        CompletableFuture<byte[]> future = new CompletableFuture<>();
+        CompletableFuture<byte[]> existing = pending.putIfAbsent(correlationId, future);
+        if (existing != null) {
+            duplicateCorrelationIdCount.increment();
+            log.warn("{} role=client correlationId={} topic={} reason=duplicate-request-id",
+                    KafkaRpcLogEvents.DUPLICATE_CORRELATION_ID, correlationId, requestTopic);
+            throw new IOException("Duplicate correlationId already in flight: " + correlationId);
+        }
+        try {
+            pendingTimestamps.put(correlationId, System.currentTimeMillis());
+            return future;
+        } catch (RuntimeException e) {
+            pending.remove(correlationId, future);
+            throw e;
+        }
     }
 
     @Override
@@ -594,5 +641,25 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             queue.offer(new StreamChunk.Poison(new IOException("Stream closed by channel")));
             streamLastActivity.remove(correlationId);
         }
+    }
+
+    long duplicateCorrelationIdCount() {
+        return duplicateCorrelationIdCount.sum();
+    }
+
+    long requestTimeoutCount() {
+        return requestTimeoutCount.sum();
+    }
+
+    long streamErrorCount() {
+        return streamErrorCount.sum();
+    }
+
+    int pendingRequestCount() {
+        return pending.size();
+    }
+
+    int activeStreamCount() {
+        return streamQueues.size();
     }
 }

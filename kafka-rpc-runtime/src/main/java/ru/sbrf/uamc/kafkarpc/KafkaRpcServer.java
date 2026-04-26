@@ -45,6 +45,10 @@ public class KafkaRpcServer implements AutoCloseable {
 
     @FunctionalInterface
     public interface MethodHandler {
+        /**
+         * Handles unary RPC request.
+         * Returning {@code null} is treated as a contract violation and results in an error reply.
+         */
         byte[] handle(String correlationId, byte[] request);
     }
 
@@ -313,6 +317,15 @@ public class KafkaRpcServer implements AutoCloseable {
         try {
             byte[] response = handler.handle(correlationId, record.value());
             if (response == null) {
+                log.warn("{} correlationId={} method={} topic={} replyTopic={} reason=handler-returned-null",
+                        KafkaRpcLogEvents.HANDLER_CONTRACT_VIOLATION, correlationId, method, requestTopic, replyTopic);
+                if (replyTopic != null && !replyTopic.isEmpty()) {
+                    sendErrorReply(replyTopic, record.key(), correlationId, method,
+                            "Handler returned null response");
+                } else {
+                    log.warn("{} reason=missing-reply-topic correlationId={} topic={}",
+                            KafkaRpcLogEvents.RESPONSE_DROPPED, correlationId, requestTopic);
+                }
                 return;
             }
             if (replyTopic == null || replyTopic.isEmpty()) {
@@ -335,21 +348,20 @@ public class KafkaRpcServer implements AutoCloseable {
             producer.send(reply, (metadata, exception) -> {
                 if (exception != null) {
                     log.error("{} role=server kind=reply topic={} correlationId={}",
-                            KafkaRpcLogEvents.SEND_FAILED, replyTopic, correlationId, exception);
+                            KafkaRpcLogEvents.REPLY_SEND_FAILED, replyTopic, correlationId, exception);
                 }
             });
         } catch (Exception e) {
             log.error("{} correlationId={} method={}", KafkaRpcLogEvents.HANDLER_FAILED, correlationId, method, e);
             if (replyTopic != null && !replyTopic.isEmpty()) {
-                sendErrorReply(replyTopic, record.key(), correlationId, method, e);
+                sendErrorReply(replyTopic, record.key(), correlationId, method, "Internal server error");
             }
         }
     }
 
-    private void sendErrorReply(String replyTopic, String key, String correlationId, String method, Exception error) {
+    private void sendErrorReply(String replyTopic, String key, String correlationId, String method,
+                                String errorMessage) {
         try {
-            log.error("{} correlationId={} method={}", KafkaRpcLogEvents.ERROR_REPLY_PREPARE_FAILED, correlationId, method, error);
-            String errorMessage = "Internal server error";
             ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, key, new byte[0]);
             reply.headers()
                     .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
@@ -366,11 +378,12 @@ public class KafkaRpcServer implements AutoCloseable {
             producer.send(reply, (metadata, exception) -> {
                 if (exception != null) {
                     log.error("{} role=server kind=error-reply topic={} correlationId={}",
-                            KafkaRpcLogEvents.SEND_FAILED, replyTopic, correlationId, exception);
+                            KafkaRpcLogEvents.ERROR_REPLY_SEND_FAILED, replyTopic, correlationId, exception);
                 }
             });
         } catch (Exception e) {
-            log.error("{} correlationId={} method={}", KafkaRpcLogEvents.ERROR_REPLY_FAILED, correlationId, method, e);
+            log.error("{} correlationId={} method={} topic={}",
+                    KafkaRpcLogEvents.ERROR_REPLY_PREPARE_FAILED, correlationId, method, requestTopic, e);
         }
     }
 

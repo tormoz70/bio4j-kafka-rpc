@@ -12,6 +12,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
@@ -112,5 +113,36 @@ class KafkaRpcServerTest {
 
         await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
                 assertEquals(0, producer.history().size()));
+    }
+
+    @Test
+    void nullHandlerResponseReturnsErrorReply() {
+        String correlationId = "corr-null";
+        String method = "Service/NullableMethod";
+        byte[] requestData = "request".getBytes();
+
+        var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
+                method, (cid, req) -> null);
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
+        server.start();
+
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
+        consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            var sentRecord = producer.history().get(0);
+            assertEquals(REPLY_TOPIC, sentRecord.topic());
+            assertArrayEquals(new byte[0], sentRecord.value());
+            assertEquals(correlationId, new String(
+                    sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_CORRELATION_ID).value(),
+                    StandardCharsets.UTF_8));
+            assertNotNull(sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_ERROR));
+        });
     }
 }

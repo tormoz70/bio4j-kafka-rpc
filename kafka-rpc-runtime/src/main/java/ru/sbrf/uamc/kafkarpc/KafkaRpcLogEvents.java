@@ -25,7 +25,12 @@ public class KafkaRpcLogEvents {
     public static final String REQUEST_DROPPED = "event=kafka.rpc.request.dropped";
     public static final String RESPONSE_DROPPED = "event=kafka.rpc.response.dropped";
     public static final String HANDLER_FAILED = "event=kafka.rpc.handler-failed";
+    public static final String HANDLER_CONTRACT_VIOLATION = "event=kafka.rpc.handler.contract-violation";
     public static final String STREAM_HANDLER_FAILED = "event=kafka.rpc.stream.handler-failed";
     public static final String ERROR_REPLY_PREPARE_FAILED = "event=kafka.rpc.error-reply.prepare-failed";
     public static final String ERROR_REPLY_FAILED = "event=kafka.rpc.error-reply.failed";
+    public static final String ERROR_REPLY_SEND_FAILED = "event=kafka.rpc.error-reply.send-failed";
+    public static final String REPLY_SEND_FAILED = "event=kafka.rpc.reply.send-failed";
+    public static final String DUPLICATE_CORRELATION_ID = "event=kafka.rpc.duplicate-correlation-id";
+    public static final String REQUEST_TIMEOUT = "event=kafka.rpc.request-timeout";
 }
