@@ -9,6 +9,7 @@ dependencies {
     implementation project(':kafka-rpc-runtime')
     implementation "org.apache.kafka:kafka-clients:${rootProject.ext.kafkaVersion}"
     implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'io.micrometer:micrometer-core'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 

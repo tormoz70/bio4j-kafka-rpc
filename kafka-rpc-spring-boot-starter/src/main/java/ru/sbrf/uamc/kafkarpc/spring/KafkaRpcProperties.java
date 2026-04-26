@@ -34,6 +34,8 @@ public class KafkaRpcProperties {
     private Integer streamHealthcheckIntervalMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS;
     /** Default stream healthcheck timeout (client, ms). Overridable per client. */
     private Integer streamHealthcheckTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
+    /** Default stream healthcheck max consecutive failures before stream is marked dead. */
+    private Integer streamHealthcheckMaxFailures = KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES;
     /** Default stream server idle timeout (ms). Client sends in stream request header; overridable per client. */
     private Integer streamServerIdleTimeoutMs = KafkaRpcConstants.DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS;
 
@@ -66,6 +68,12 @@ public class KafkaRpcProperties {
 
     /** Default number of consumer threads for client (reply topic). Enables scaling via partitioning. Default 1. */
     private int clientConsumerCount = 1;
+    /** Maximum number of pooled channels created lazily by {@link KafkaRpcChannelPool}. */
+    private int channelPoolMaxSize = 128;
+    /** Idle channel eviction timeout in ms. 0 disables eviction. */
+    private long channelPoolIdleTimeoutMs = 0;
+    /** Background cleanup interval for pool eviction checks in ms. */
+    private long channelPoolCleanupIntervalMs = 30_000;
 
     /**
      * Build producer Properties for a client: global base + client overrides.
@@ -233,6 +241,19 @@ public class KafkaRpcProperties {
         return streamHealthcheckTimeoutMs != null ? streamHealthcheckTimeoutMs : KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS;
     }
 
+    /** Max consecutive failed healthchecks for this client. Uses client override or global default. */
+    public int getStreamHealthcheckMaxFailuresForClient(String clientName) {
+        if (clientName != null && clients != null) {
+            var c = clients.get(clientName);
+            if (c != null && c.getStreamHealthcheckMaxFailures() != null) {
+                return Math.max(1, c.getStreamHealthcheckMaxFailures());
+            }
+        }
+        return streamHealthcheckMaxFailures != null
+                ? Math.max(1, streamHealthcheckMaxFailures)
+                : KafkaRpcConstants.DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES;
+    }
+
     /** Stream server idle timeout for this client (ms). Client sends value in stream request header; uses client override or global default. */
     public long getStreamServerIdleTimeoutMsForClient(String clientName) {
         if (clientName != null && clients != null) {
@@ -313,6 +334,8 @@ public class KafkaRpcProperties {
         private Integer streamHealthcheckIntervalMs;
         /** Stream healthcheck timeout (ms). Override global kafka-rpc.stream-healthcheck-timeout-ms. */
         private Integer streamHealthcheckTimeoutMs;
+        /** Max consecutive failed healthchecks before the stream is marked dead. Override global value. */
+        private Integer streamHealthcheckMaxFailures;
         /** Stream server idle timeout (ms). Sent in stream request header; server cancels stream after no healthcheck. Override global kafka-rpc.stream-server-idle-timeout-ms. */
         private Integer streamServerIdleTimeoutMs;
         /** Number of consumer threads for reply topic. Override global kafka-rpc.client-consumer-count. */

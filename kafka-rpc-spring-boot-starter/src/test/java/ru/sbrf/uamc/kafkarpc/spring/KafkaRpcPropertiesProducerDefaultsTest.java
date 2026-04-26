@@ -85,4 +85,23 @@ class KafkaRpcPropertiesProducerDefaultsTest {
         assertEquals("all", producer.getProperty("acks"));
         assertEquals("15", producer.getProperty("retries"));
     }
+
+    @Test
+    void streamHealthcheckMaxFailuresDefaultsAndOverridesWork() {
+        var properties = new KafkaRpcProperties();
+        assertEquals(2, properties.getStreamHealthcheckMaxFailuresForClient("missing"));
+
+        var client = new KafkaRpcProperties.Client();
+        client.setStreamHealthcheckMaxFailures(5);
+        properties.setClients(Map.of("greeter", client));
+        assertEquals(5, properties.getStreamHealthcheckMaxFailuresForClient("greeter"));
+    }
+
+    @Test
+    void channelPoolDefaultsAreReasonable() {
+        var properties = new KafkaRpcProperties();
+        assertEquals(128, properties.getChannelPoolMaxSize());
+        assertEquals(0, properties.getChannelPoolIdleTimeoutMs());
+        assertEquals(30_000, properties.getChannelPoolCleanupIntervalMs());
+    }
 }
