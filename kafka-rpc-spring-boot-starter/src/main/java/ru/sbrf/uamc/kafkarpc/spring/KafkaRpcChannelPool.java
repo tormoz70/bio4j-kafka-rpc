@@ -31,7 +31,8 @@ public class KafkaRpcChannelPool {
             try {
                 return createChannel(c);
             } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Interrupted while creating Kafka RPC channel for client=" + c, e);
             }
         });
     }

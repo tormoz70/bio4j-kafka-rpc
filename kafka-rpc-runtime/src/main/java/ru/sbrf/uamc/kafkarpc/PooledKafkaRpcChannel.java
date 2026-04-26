@@ -590,8 +590,9 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     @Override
     public void closeStream(String correlationId) {
         BlockingQueue<StreamChunk> queue = streamQueues.get(correlationId);
-        if (queue != null && !closed.get()) { // Не закрывать, если канал уже закрывается
+        if (queue != null) {
             queue.offer(new StreamChunk.Poison(new IOException("Stream closed by channel")));
+            streamLastActivity.remove(correlationId);
         }
     }
 }
