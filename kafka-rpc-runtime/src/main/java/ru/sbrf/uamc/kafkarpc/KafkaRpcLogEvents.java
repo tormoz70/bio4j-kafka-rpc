@@ -7,11 +7,14 @@ import lombok.experimental.UtilityClass;
 public class KafkaRpcLogEvents {
 
     public static final String CONSUMER_STARTED = "event=kafka.rpc.consumer.started";
+    public static final String CONSUMER_STARTING = "event=kafka.rpc.consumer.starting";
+    public static final String CONSUMER_CLOSING = "event=kafka.rpc.consumer.closing";
     public static final String CONSUMER_RECREATING = "event=kafka.rpc.consumer.recreating";
     public static final String SERVER_STARTED = "event=kafka.rpc.server.started";
     public static final String SERVER_LIFECYCLE_STARTED = "event=kafka.rpc.server.lifecycle-started";
     public static final String CHANNEL_CREATED = "event=kafka.rpc.channel.created";
     public static final String CHANNEL_CLOSE_FAILED = "event=kafka.rpc.channel.close-failed";
+    public static final String CHANNEL_CLEANUP = "event=kafka.rpc.channel.cleanup";
 
     public static final String STREAM_IDLE_TIMEOUT = "event=kafka.rpc.stream.idle-timeout";
     public static final String REQUEST_PROCESSING_FAILED = "event=kafka.rpc.request.processing-failed";

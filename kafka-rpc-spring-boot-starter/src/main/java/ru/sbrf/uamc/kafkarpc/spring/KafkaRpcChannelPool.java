@@ -27,10 +27,16 @@ public class KafkaRpcChannelPool {
      * @param clientName key from kafka-rpc.clients (e.g. greeter, echo)
      */
     public KafkaRpcChannel getOrCreate(String clientName) {
-        return channels.computeIfAbsent(clientName, this::createChannel);
+        return channels.computeIfAbsent(clientName, c -> {
+            try {
+                return createChannel(c);
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
-    private PooledKafkaRpcChannel createChannel(String clientName) {
+    private PooledKafkaRpcChannel createChannel(String clientName) throws InterruptedException {
         String requestTopic = properties.getRequestTopicForClient(clientName);
         String replyTopic = properties.getReplyTopicForClient(clientName);
         if (requestTopic == null || replyTopic == null) {

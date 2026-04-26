@@ -40,4 +40,6 @@ public interface KafkaRpcChannel extends AutoCloseable {
 
     @Override
     void close();
+
+    void closeStream(String correlationId);
 }
