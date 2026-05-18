@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
@@ -12,14 +13,17 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.kafka.common.TopicPartition;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,6 +38,7 @@ import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_
 /** Server that consumes requests from a Kafka topic and dispatches to handlers. Supports multiple consumers (same group) for scaling via partitioning. */
 @Slf4j
 public class KafkaRpcServer implements AutoCloseable {
+    private static final long CONSUMER_READY_TIMEOUT_MS = 30_000L;
 
     private final List<Consumer<String, byte[]>> consumers;
     private final Producer<String, byte[]> producer;
@@ -149,14 +154,44 @@ public class KafkaRpcServer implements AutoCloseable {
     }
 
     public void start() {
+        CountDownLatch consumerReadyLatch = new CountDownLatch(consumers.size());
         for (int i = 0; i < consumers.size(); i++) {
             Consumer<String, byte[]> c = consumers.get(i);
-            c.subscribe(Collections.singletonList(requestTopic));
             final int index = i;
+            AtomicBoolean firstAssignment = new AtomicBoolean(false);
+            c.subscribe(Collections.singletonList(requestTopic), new ConsumerRebalanceListener() {
+                @Override
+                public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+                    log.info("REBALANCE: role=server index={} partitions revoked: {} group={}",
+                            index, partitions, consumerGroupId);
+                }
+
+                @Override
+                public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                    log.info("REBALANCE: role=server index={} partitions assigned: {} group={}",
+                            index, partitions, consumerGroupId);
+                    if (firstAssignment.compareAndSet(false, true)) {
+                        consumerReadyLatch.countDown();
+                        log.info("{} role=server index={} READY topic={} group={} assigned={}",
+                                KafkaRpcLogEvents.CONSUMER_STARTED, index, requestTopic, consumerGroupId, partitions);
+                    }
+                }
+            });
             log.info("{} role=server index={} topic={} group={}",
                     KafkaRpcLogEvents.CONSUMER_STARTED, index, requestTopic, consumerGroupId);
             Thread t = Thread.ofPlatform().name("kafka-rpc-server-" + index).start(() -> run(c));
             consumerThreads.add(t);
+        }
+        try {
+            if (!consumerReadyLatch.await(CONSUMER_READY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                log.warn("Only {} of {} server consumers became ready in time for topic={}",
+                        consumers.size() - consumerReadyLatch.getCount(), consumers.size(), requestTopic);
+            } else {
+                log.info("All {} server consumers ready for topic={}", consumers.size(), requestTopic);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted while waiting server consumers readiness for topic={}", requestTopic);
         }
         streamIdleThread = Thread.ofVirtual().name("kafka-rpc-stream-idle").start(this::runStreamIdleCheck);
         log.info("{} topic={} group={} consumerCount={} handlers={} streamHandlers={}",
