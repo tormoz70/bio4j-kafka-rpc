@@ -128,11 +128,9 @@ public class KafkaRpcProperties {
      */
     public Properties getProducerPropertiesForServer(String serviceName) {
         var p = baseProducerProperties();
-        if (serviceName != null && service != null) {
-            var svc = service.get(serviceName);
-            if (svc != null && svc.getProducer() != null) {
-                svc.getProducer().forEach(p::setProperty);
-            }
+        Service svc = getServiceConfig(serviceName);
+        if (svc != null && svc.getProducer() != null) {
+            svc.getProducer().forEach(p::setProperty);
         }
         return p;
     }
@@ -146,12 +144,9 @@ public class KafkaRpcProperties {
      */
     public Properties getConsumerPropertiesForServer(String serviceName, String requestTopic) {
         var p = baseConsumerProperties(true);
-        Service svc = null;
-        if (serviceName != null && service != null) {
-            svc = service.get(serviceName);
-            if (svc != null && svc.getConsumer() != null) {
-                svc.getConsumer().forEach(p::setProperty);
-            }
+        Service svc = getServiceConfig(serviceName);
+        if (svc != null && svc.getConsumer() != null) {
+            svc.getConsumer().forEach(p::setProperty);
         }
         String groupId = (svc != null && svc.getGroupId() != null && !svc.getGroupId().isBlank())
                 ? svc.getGroupId()
@@ -275,11 +270,9 @@ public class KafkaRpcProperties {
 
     /** Number of consumer threads for server (request topic) for this service. Uses service override or global serverConsumerCount. */
     public int getServerConsumerCountForService(String serviceName) {
-        if (serviceName != null && service != null) {
-            var svc = service.get(serviceName);
-            if (svc != null && svc.getConsumerCount() != null) {
-                return Math.max(1, svc.getConsumerCount());
-            }
+        var svc = getServiceConfig(serviceName);
+        if (svc != null && svc.getConsumerCount() != null) {
+            return Math.max(1, svc.getConsumerCount());
         }
         return Math.max(1, serverConsumerCount);
     }
@@ -297,13 +290,33 @@ public class KafkaRpcProperties {
 
     /** Poll interval for this service (ms). Uses service override or global default. */
     public int getPollIntervalMsForService(String serviceName) {
-        if (serviceName != null && service != null) {
-            var svc = service.get(serviceName);
-            if (svc != null && svc.getPollIntervalMs() != null) {
-                return svc.getPollIntervalMs();
-            }
+        var svc = getServiceConfig(serviceName);
+        if (svc != null && svc.getPollIntervalMs() != null) {
+            return svc.getPollIntervalMs();
         }
         return pollIntervalMs;
+    }
+
+    /**
+     * Resolve service config by name using exact match first, then case-insensitive match.
+     * This keeps backward compatibility when generated service names use different casing
+     * than YAML keys (for example, "Echo" vs "echo").
+     */
+    public Service getServiceConfig(String serviceName) {
+        if (serviceName == null || service == null || service.isEmpty()) {
+            return null;
+        }
+        Service exact = service.get(serviceName);
+        if (exact != null) {
+            return exact;
+        }
+        for (Map.Entry<String, Service> entry : service.entrySet()) {
+            String configuredName = entry.getKey();
+            if (configuredName != null && configuredName.equalsIgnoreCase(serviceName)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     /** Poll interval for this client (ms). Uses client override or global default. */

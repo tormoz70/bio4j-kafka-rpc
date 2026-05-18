@@ -6,6 +6,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class KafkaRpcPropertiesProducerDefaultsTest {
 
@@ -103,5 +104,32 @@ class KafkaRpcPropertiesProducerDefaultsTest {
         assertEquals(128, properties.getChannelPoolMaxSize());
         assertEquals(0, properties.getChannelPoolIdleTimeoutMs());
         assertEquals(30_000, properties.getChannelPoolCleanupIntervalMs());
+    }
+
+    @Test
+    void resolvesServiceConfigCaseInsensitiveForServerSettings() {
+        var properties = new KafkaRpcProperties();
+        properties.setBootstrapServers("kafka:9092");
+
+        var svc = new KafkaRpcProperties.Service();
+        svc.setRequestTopic("echo.request");
+        svc.setGroupId("echo-group-custom");
+        svc.setConsumerCount(3);
+        svc.setPollIntervalMs(250);
+        svc.setProducer(Map.of("acks", "1"));
+        svc.setConsumer(Map.of("auto.offset.reset", "earliest"));
+        properties.setService(Map.of("echo", svc));
+
+        assertNotNull(properties.getServiceConfig("Echo"));
+        assertEquals("echo.request", ServiceConfigTools.resolveRequestTopic(properties, "Echo"));
+        assertEquals(3, properties.getServerConsumerCountForService("Echo"));
+        assertEquals(250, properties.getPollIntervalMsForService("Echo"));
+
+        var producerProps = properties.getProducerPropertiesForServer("Echo");
+        assertEquals("1", producerProps.getProperty("acks"));
+
+        var consumerProps = properties.getConsumerPropertiesForServer("Echo", "fallback.request");
+        assertEquals("earliest", consumerProps.getProperty("auto.offset.reset"));
+        assertEquals("echo-group-custom", consumerProps.getProperty("group.id"));
     }
 }
