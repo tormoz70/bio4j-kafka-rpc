@@ -106,9 +106,9 @@ public class KafkaRpcGenerator {
     }
 
     private static JavaFile generateService(DescriptorProtos.FileDescriptorProto file,
-                                           DescriptorProtos.ServiceDescriptorProto service,
-                                           String outPkg, String javaPackage,
-                                           Map<String, String> protoPkgToJavaPkg) {
+                                            DescriptorProtos.ServiceDescriptorProto service,
+                                            String outPkg, String javaPackage,
+                                            Map<String, String> protoPkgToJavaPkg) {
         String mainClassName = service.getName() + "KafkaRpc";
 
         TypeSpec.Builder mainType = TypeSpec.classBuilder(mainClassName)
@@ -354,7 +354,7 @@ public class KafkaRpcGenerator {
                         .build())
                 .addMethod(MethodSpec.constructorBuilder()
                         .addModifiers(Modifier.PUBLIC)
-                        .addStatement("this.serviceName = $S", defaultServiceName)
+                        .addStatement("this.serviceName = SERVICE_NAME")
                         .build())
                 .addMethod(MethodSpec.constructorBuilder()
                         .addModifiers(Modifier.PUBLIC)

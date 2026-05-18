@@ -147,7 +147,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
         for (int i = 0; i < count; i++) {
             final int index = i;
-            Thread t = Thread.ofVirtual()
+            Thread t = Thread.ofPlatform()
                     .name("kafka-rpc-pool-" + replyTopic + "-" + index)
                     .start(() -> runConsumerLoop(index));
             consumerThreads.add(t);
@@ -254,7 +254,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             try {
                 Properties cons = new Properties();
                 cons.putAll(consumerConfigBase);
-                consumer = new KafkaConsumer<>(cons);
+                consumer = KafkaRpcConsumerFactory.create(cons, replyTopic);
                 consumer.subscribe(Collections.singletonList(replyTopic));
 
                 // Сигнал готовности ТОЛЬКО при первой успешной подписке

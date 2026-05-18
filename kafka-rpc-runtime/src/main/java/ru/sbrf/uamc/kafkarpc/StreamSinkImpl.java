@@ -6,9 +6,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
 final class StreamSinkImpl implements StreamSink {
@@ -21,9 +19,6 @@ final class StreamSinkImpl implements StreamSink {
     private final boolean ordered;
     private final AtomicBoolean ended = new AtomicBoolean(false);
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
-    private final AtomicInteger inFlightSends = new AtomicInteger(0);
-    private final AtomicReference<IOException> firstSendFailure = new AtomicReference<>(null);
-    private final Object completionMonitor = new Object();
 
     StreamSinkImpl(Producer<String, byte[]> producer, String replyTopic, String correlationId, String method, boolean ordered) {
         this.producer = producer;
@@ -35,40 +30,24 @@ final class StreamSinkImpl implements StreamSink {
 
     @Override
     public void send(byte[] chunk) throws IOException {
-        ensureWritable();
+        if (cancelled.get() || ended.get()) {
+            throw new IOException("Stream already ended or cancelled");
+        }
         String key = ordered ? correlationId : null;
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, chunk);
         record.headers()
                 .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
                 .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes(StandardCharsets.UTF_8) : new byte[0]);
-        inFlightSends.incrementAndGet();
         try {
-            producer.send(record, (metadata, exception) -> {
-                try {
-                    if (exception != null) {
-                        firstSendFailure.compareAndSet(null, new IOException("Failed to send stream chunk", exception));
-                    }
-                } finally {
-                    inFlightSends.decrementAndGet();
-                    synchronized (completionMonitor) {
-                        completionMonitor.notifyAll();
-                    }
-                }
-            });
-        } catch (Exception sendCallFailure) {
-            inFlightSends.decrementAndGet();
-            throw new IOException("Failed to queue stream chunk", sendCallFailure);
+            producer.send(record).get();
+        } catch (Exception e) {
+            throw new IOException("Failed to send stream chunk", e);
         }
     }
 
     @Override
     public void end() throws IOException {
         if (!ended.compareAndSet(false, true)) return;
-        awaitPendingSends();
-        IOException sendFailure = firstSendFailure.get();
-        if (sendFailure != null) {
-            throw sendFailure;
-        }
         String key = ordered ? correlationId : null;
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, new byte[0]);
         record.headers()
@@ -90,34 +69,5 @@ final class StreamSinkImpl implements StreamSink {
     @Override
     public boolean isCancelled() {
         return cancelled.get();
-    }
-
-    private void ensureWritable() throws IOException {
-        if (cancelled.get() || ended.get()) {
-            throw new IOException("Stream already ended or cancelled");
-        }
-        IOException sendFailure = firstSendFailure.get();
-        if (sendFailure != null) {
-            throw sendFailure;
-        }
-    }
-
-    private void awaitPendingSends() throws IOException {
-        while (inFlightSends.get() > 0) {
-            IOException sendFailure = firstSendFailure.get();
-            if (sendFailure != null) {
-                throw sendFailure;
-            }
-            try {
-                synchronized (completionMonitor) {
-                    if (inFlightSends.get() > 0) {
-                        completionMonitor.wait(50);
-                    }
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted while waiting stream chunk delivery", e);
-            }
-        }
     }
 }

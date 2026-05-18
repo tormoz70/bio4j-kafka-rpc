@@ -8,6 +8,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
+import static org.apache.kafka.clients.consumer.ConsumerConfig.*;
+import static org.apache.kafka.clients.producer.ProducerConfig.*;
+import static org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG;
+
 /**
  * Configuration properties for Kafka RPC. Uses plain kafka-clients (no spring-kafka).
  * Supports multiple clients and multiple services; each can override global producer/consumer settings.
@@ -22,7 +27,7 @@ public class KafkaRpcProperties {
     /** Enable Kafka RPC server (consumes requests). */
     private boolean serverEnabled = true;
 
-    
+
 
     /** Number of consumer threads for server (request topic). Enables scaling via partitioning. Default 1. */
     private int serverConsumerCount = 1;
@@ -112,7 +117,7 @@ public class KafkaRpcProperties {
         } else {
             groupId = clientName + "-group";
         }
-        p.setProperty("group.id", groupId);
+        p.setProperty(GROUP_ID_CONFIG, groupId);
         return p;
     }
 
@@ -151,23 +156,23 @@ public class KafkaRpcProperties {
         String groupId = (svc != null && svc.getGroupId() != null && !svc.getGroupId().isBlank())
                 ? svc.getGroupId()
                 : requestTopic + "-group";
-        p.setProperty("group.id", groupId);
+        p.setProperty(GROUP_ID_CONFIG, groupId);
         return p;
     }
 
     private Properties baseProducerProperties() {
         var p = new Properties();
-        p.put("bootstrap.servers", getBootstrapServers());
-        p.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-        p.put("value.serializer", "org.apache.kafka.common.serialization.ByteArraySerializer");
+        p.put(BOOTSTRAP_SERVERS_CONFIG, getBootstrapServers());
+        p.put(KEY_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringSerializer");
+        p.put(VALUE_SERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArraySerializer");
         // Safe producer defaults for RPC traffic; can be overridden by kafka-rpc.producer.*
-        p.put("acks", "all");
-        p.put("enable.idempotence", "true");
-        p.put("retries", "10");
-        p.put("max.in.flight.requests.per.connection", "5");
-        p.put("request.timeout.ms", "30000");
-        p.put("delivery.timeout.ms", "120000");
-        p.put("max.request.size", Integer.toString(KafkaRpcConstants.DEFAULT_MAX_MESSAGE_SIZE_BYTES));
+        p.put(ACKS_CONFIG, "all");
+        p.put(ENABLE_IDEMPOTENCE_CONFIG, "true");
+        p.put(RETRIES_CONFIG, "10");
+        p.put(MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, "5");
+        p.put(REQUEST_TIMEOUT_MS_CONFIG, "30000");
+        p.put(DELIVERY_TIMEOUT_MS_CONFIG, "120000");
+        p.put(MAX_REQUEST_SIZE_CONFIG, Integer.toString(KafkaRpcConstants.DEFAULT_MAX_MESSAGE_SIZE_BYTES));
         if (producer != null) {
             producer.forEach(p::setProperty);
         }
@@ -176,11 +181,14 @@ public class KafkaRpcProperties {
 
     private Properties baseConsumerProperties(boolean forServer) {
         var p = new Properties();
-        p.put("bootstrap.servers", getBootstrapServers());
-        p.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
-        p.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer");
-        p.put("auto.offset.reset", forServer ? "earliest" : "latest");
-        p.put("max.partition.fetch.bytes", Integer.toString(KafkaRpcConstants.DEFAULT_MAX_MESSAGE_SIZE_BYTES));
+        p.put(BOOTSTRAP_SERVERS_CONFIG, getBootstrapServers());
+        p.put(KEY_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.StringDeserializer");
+        p.put(VALUE_DESERIALIZER_CLASS_CONFIG, "org.apache.kafka.common.serialization.ByteArrayDeserializer");
+        p.put(AUTO_OFFSET_RESET_CONFIG, "latest");
+        p.put(MAX_PARTITION_FETCH_BYTES_CONFIG, Integer.toString(KafkaRpcConstants.DEFAULT_MAX_MESSAGE_SIZE_BYTES));
+        p.put(HEARTBEAT_INTERVAL_MS_CONFIG, "5000");
+        p.put(SESSION_TIMEOUT_MS_CONFIG, "60000");
+        p.put(MAX_POLL_INTERVAL_MS_CONFIG, "300000");
         if (consumer != null) {
             consumer.forEach(p::setProperty);
         }

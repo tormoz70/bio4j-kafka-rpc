@@ -26,6 +26,11 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
+
 /** Server that consumes requests from a Kafka topic and dispatches to handlers. Supports multiple consumers (same group) for scaling via partitioning. */
 @Slf4j
 public class KafkaRpcServer implements AutoCloseable {
@@ -107,21 +112,21 @@ public class KafkaRpcServer implements AutoCloseable {
 
         Properties consBase = new Properties();
         consBase.putAll(consumerConfig);
-        consBase.putIfAbsent("key.deserializer", StringDeserializer.class.getName());
-        consBase.putIfAbsent("value.deserializer", ByteArrayDeserializer.class.getName());
+        consBase.putIfAbsent(KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        consBase.putIfAbsent(VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
         int count = Math.max(1, consumerCount);
         List<Consumer<String, byte[]>> list = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
             Properties cons = new Properties();
             cons.putAll(consBase);
-            list.add(new KafkaConsumer<>(cons));
+            list.add(KafkaRpcConsumerFactory.create(cons, requestTopic));
         }
         this.consumers = Collections.unmodifiableList(list);
 
         Properties prod = new Properties();
         prod.putAll(producerConfig);
-        prod.putIfAbsent("key.serializer", StringSerializer.class.getName());
-        prod.putIfAbsent("value.serializer", ByteArraySerializer.class.getName());
+        prod.putIfAbsent(KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        prod.putIfAbsent(VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class.getName());
         this.producer = new KafkaProducer<>(prod);
     }
 
@@ -150,12 +155,12 @@ public class KafkaRpcServer implements AutoCloseable {
             final int index = i;
             log.info("{} role=server index={} topic={} group={}",
                     KafkaRpcLogEvents.CONSUMER_STARTED, index, requestTopic, consumerGroupId);
-            Thread t = Thread.ofVirtual().name("kafka-rpc-server-" + index).start(() -> run(c));
+            Thread t = Thread.ofPlatform().name("kafka-rpc-server-" + index).start(() -> run(c));
             consumerThreads.add(t);
         }
         streamIdleThread = Thread.ofVirtual().name("kafka-rpc-stream-idle").start(this::runStreamIdleCheck);
-        log.info("{} topic={} group={} consumerCount={}",
-                KafkaRpcLogEvents.SERVER_STARTED, requestTopic, consumerGroupId, consumers.size());
+        log.info("{} topic={} group={} consumerCount={} handlers={} streamHandlers={}",
+                KafkaRpcLogEvents.SERVER_STARTED, requestTopic, consumerGroupId, consumers.size(), handlers, streamHandlers);
     }
 
     private void runStreamIdleCheck() {
@@ -309,8 +314,10 @@ public class KafkaRpcServer implements AutoCloseable {
 
         MethodHandler handler = method != null ? handlers.get(method) : null;
         if (handler == null) {
-            log.warn("{} reason=no-handler topic={} method={} correlationId={}",
-                    KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic, method, correlationId);
+            if(log.isDebugEnabled()) {
+                log.warn("{} reason=no-handler topic={} method={} correlationId={}",
+                        KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic, method, correlationId);
+            }
             return;
         }
 
@@ -354,14 +361,24 @@ public class KafkaRpcServer implements AutoCloseable {
         } catch (Exception e) {
             log.error("{} correlationId={} method={}", KafkaRpcLogEvents.HANDLER_FAILED, correlationId, method, e);
             if (replyTopic != null && !replyTopic.isEmpty()) {
-                sendErrorReply(replyTopic, record.key(), correlationId, method, "Internal server error");
+                sendErrorReply(replyTopic, record.key(), correlationId, method, e);
             }
         }
     }
 
-    private void sendErrorReply(String replyTopic, String key, String correlationId, String method,
-                                String errorMessage) {
+    private void sendErrorReply(String replyTopic, String key, String correlationId, String method, String errorMessage) {
+        sendErrorReply(replyTopic, key, correlationId, method, errorMessage, null);
+    }
+
+    private void sendErrorReply(String replyTopic, String key, String correlationId, String method, Exception error) {
+        sendErrorReply(replyTopic, key, correlationId, method, "Internal server error", error);
+    }
+
+    private void sendErrorReply(String replyTopic, String key, String correlationId, String method, String errorMessage, Exception error) {
         try {
+            if(error != null) {
+                log.error("{} correlationId={} method={}", KafkaRpcLogEvents.ERROR_REPLY_PREPARE_FAILED, correlationId, method, error);
+            }
             ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, key, new byte[0]);
             reply.headers()
                     .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))

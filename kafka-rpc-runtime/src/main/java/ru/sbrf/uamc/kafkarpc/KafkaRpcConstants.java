@@ -35,10 +35,10 @@ public class KafkaRpcConstants {
     public static final int DEFAULT_STREAM_HEALTHCHECK_INTERVAL_MS = 5_000;
     /** Default client timeout: no healthcheck response = stream dead (ms). */
     public static final int DEFAULT_STREAM_HEALTHCHECK_TIMEOUT_MS = 15_000;
-    /** Default number of consecutive failed healthchecks before a stream is marked dead. */
-    public static final int DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES = 2;
     /** Default for stream-server-idle-timeout (ms). Client-only: used when not set in config; server requires header. */
     public static final int DEFAULT_STREAM_SERVER_IDLE_TIMEOUT_MS = 20_000;
+
+    public static final int DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES = 2;
 
     public static final int DEFAULT_POLL_INTERVAL_MS = 100;
     public static final int DEFAULT_STREAM_BUFFER_SIZE = 1024;
