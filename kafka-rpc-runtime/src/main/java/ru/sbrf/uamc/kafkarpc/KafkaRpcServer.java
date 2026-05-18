@@ -119,7 +119,7 @@ public class KafkaRpcServer implements AutoCloseable {
         for (int i = 0; i < count; i++) {
             Properties cons = new Properties();
             cons.putAll(consBase);
-            list.add(KafkaRpcConsumerFactory.create(cons, requestTopic));
+            list.add(KafkaRpcConsumerFactory.create(cons));
         }
         this.consumers = Collections.unmodifiableList(list);
 

@@ -4,11 +4,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.WakeupException;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -18,6 +20,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -247,23 +250,39 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private void runConsumerLoop(int consumerIndex) {
         log.debug("{} --- runConsumerLoop started", KafkaRpcLogEvents.CONSUMER_STARTING);
         long backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
-        boolean isFirstStart = true;
+        AtomicBoolean firstStart = new AtomicBoolean(true);
 
         while (!closed.get()) {
             Consumer<String, byte[]> consumer = null;
             try {
                 Properties cons = new Properties();
                 cons.putAll(consumerConfigBase);
-                consumer = KafkaRpcConsumerFactory.create(cons, replyTopic);
-                consumer.subscribe(Collections.singletonList(replyTopic));
+                consumer = KafkaRpcConsumerFactory.create(cons);
+                Consumer<String, byte[]> readyAwareConsumer = consumer;
+                consumer.subscribe(Collections.singletonList(replyTopic), new ConsumerRebalanceListener() {
+                    @Override
+                    public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
+                        log.info("REBALANCE: role=client index={} partitions revoked: {} group={}",
+                                consumerIndex, partitions, consumerGroupId);
+                    }
 
-                // Сигнал готовности ТОЛЬКО при первой успешной подписке
-                if (isFirstStart && consumerReadyLatch != null) {
-                    consumerReadyLatch.countDown();
-                    isFirstStart = false;
-                    log.info("{} role=client index={} READY topic={} group={}",
-                            KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, consumerGroupId);
-                }
+                    @Override
+                    public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                        log.info("REBALANCE: role=client index={} partitions assigned: {} group={}",
+                                consumerIndex, partitions, consumerGroupId);
+                        partitions.forEach(tp -> {
+                            long pos = readyAwareConsumer.position(tp);
+                            log.debug("Partition {} position after assign: {}", tp, pos);
+                        });
+
+                        // Сигнал готовности только после фактического assign.
+                        if (consumerReadyLatch != null && firstStart.compareAndSet(true, false)) {
+                            consumerReadyLatch.countDown();
+                            log.info("{} role=client index={} READY topic={} group={} assigned={}",
+                                    KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, consumerGroupId, partitions);
+                        }
+                    }
+                });
 
                 log.info("{} role=client index={} topic={} group={}",
                         KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, consumerGroupId);

@@ -151,6 +151,7 @@ class PooledKafkaRpcChannelTest {
     void allowsReusingCorrelationIdAfterRequestCompletion() throws Exception {
         String correlationId = "reuse-id";
 
+        CompletableFuture<byte[]> firstCall = channel.requestAsync(correlationId, "req-1".getBytes());
         consumer.schedulePollTask(() -> {
             TopicPartition tp = new TopicPartition(REPLY_TOPIC, 0);
             consumer.rebalance(List.of(tp));
@@ -163,9 +164,10 @@ class PooledKafkaRpcChannelTest {
                     correlationId, "resp-1".getBytes(), headers, Optional.empty()
             ));
         });
-        byte[] firstResult = channel.request(correlationId, "req-1".getBytes());
+        byte[] firstResult = firstCall.get();
         assertArrayEquals("resp-1".getBytes(), firstResult);
 
+        CompletableFuture<byte[]> secondCall = channel.requestAsync(correlationId, "req-2".getBytes());
         consumer.schedulePollTask(() -> {
             TopicPartition tp = new TopicPartition(REPLY_TOPIC, 0);
             consumer.updateEndOffsets(Map.of(tp, 2L));
@@ -176,7 +178,7 @@ class PooledKafkaRpcChannelTest {
                     correlationId, "resp-2".getBytes(), headers, Optional.empty()
             ));
         });
-        byte[] secondResult = channel.request(correlationId, "req-2".getBytes());
+        byte[] secondResult = secondCall.get();
         assertArrayEquals("resp-2".getBytes(), secondResult);
     }
 }
