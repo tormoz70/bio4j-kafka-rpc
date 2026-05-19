@@ -42,6 +42,9 @@ public class KafkaRpcConstants {
 
     public static final int DEFAULT_STREAM_HEALTHCHECK_MAX_FAILURES = 2;
 
+    /** Max wait for reply-topic consumer partition assignment when opening a pooled channel. */
+    public static final int DEFAULT_CONSUMER_READY_TIMEOUT_MS = 30_000;
+
     public static final int DEFAULT_POLL_INTERVAL_MS = 100;
     public static final int DEFAULT_STREAM_BUFFER_SIZE = 1024;
     /** Default maximum concurrent server-streaming RPCs per {@link KafkaRpcServer} instance. */

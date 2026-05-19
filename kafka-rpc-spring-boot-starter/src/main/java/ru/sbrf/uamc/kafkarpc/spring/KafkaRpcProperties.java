@@ -83,6 +83,25 @@ public class KafkaRpcProperties {
     private long channelPoolIdleTimeoutMs = 0;
     /** Background cleanup interval for pool eviction checks in ms. */
     private long channelPoolCleanupIntervalMs = 30_000;
+    /**
+     * When {@link #channelPoolIdleTimeoutMs} is 0: if true, append {@code -inst-<uuid>} to client
+     * {@code group.id} on each new channel (fast restart). If false, use configured group.id as-is (stable group).
+     * When idle eviction is enabled ({@code channelPoolIdleTimeoutMs > 0}), always mutates regardless of this flag.
+     */
+    private boolean channelPoolMutateConsumerGroupOnChannelStart = true;
+    /** Max wait (ms) for reply consumer assignment when a pooled channel is created. */
+    private int consumerReadyTimeoutMs = KafkaRpcConstants.DEFAULT_CONSUMER_READY_TIMEOUT_MS;
+
+    /**
+     * Whether a new pooled channel should use a unique consumer group instance suffix.
+     * Forced to true when {@link #channelPoolIdleTimeoutMs} &gt; 0.
+     */
+    public boolean resolveMutateConsumerGroupOnChannelStart() {
+        if (channelPoolIdleTimeoutMs > 0) {
+            return true;
+        }
+        return channelPoolMutateConsumerGroupOnChannelStart;
+    }
 
     /**
      * Build producer Properties for a client: global base + client overrides.

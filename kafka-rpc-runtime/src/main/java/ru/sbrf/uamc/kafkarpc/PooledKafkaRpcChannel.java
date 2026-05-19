@@ -46,8 +46,6 @@ import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_
 public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private static final long CONSUMER_RECOVERY_INITIAL_BACKOFF_MS = 1_000L;
     private static final long CONSUMER_RECOVERY_MAX_BACKOFF_MS = 30_000L;
-    private static final long CONSUMER_READY_TIMEOUT_MS = 30_000L;
-
     private final Producer<String, byte[]> producer;
     private final String requestTopic;
     private final String replyTopic;
@@ -60,8 +58,10 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final int pollIntervalMs;
     private final int streamBufferSize;
     private final String consumerGroupId;
-    /** Unique group per channel instance so a replaced channel does not wait for the previous member to leave. */
+    /** Effective group.id passed to Kafka consumers (configured id, optionally with -inst-uuid). */
     private final String channelConsumerGroupId;
+    private final boolean mutateConsumerGroupPerChannelStart;
+    private final long consumerReadyTimeoutMs;
     private final ConcurrentHashMap<String, CompletableFuture<byte[]>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BlockingQueue<StreamChunk>> streamQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -126,7 +126,40 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                  long streamServerIdleTimeoutMs,
                                  int consumerCount,
                                  int pollIntervalMs, int streamBufferSize) throws InterruptedException {
+        this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckMaxFailures,
+                streamServerIdleTimeoutMs, consumerCount, pollIntervalMs, streamBufferSize, true,
+                KafkaRpcConstants.DEFAULT_CONSUMER_READY_TIMEOUT_MS);
+    }
+
+    public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
+                                 String requestTopic, String replyTopic, int timeoutMs,
+                                 boolean streamHealthcheckEnabled,
+                                 int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
+                                 int streamHealthcheckMaxFailures,
+                                 long streamServerIdleTimeoutMs,
+                                 int consumerCount,
+                                 int pollIntervalMs, int streamBufferSize,
+                                 boolean mutateConsumerGroupPerChannelStart) throws InterruptedException {
+        this(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs, streamHealthcheckEnabled,
+                streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckMaxFailures,
+                streamServerIdleTimeoutMs, consumerCount, pollIntervalMs, streamBufferSize,
+                mutateConsumerGroupPerChannelStart, KafkaRpcConstants.DEFAULT_CONSUMER_READY_TIMEOUT_MS);
+    }
+
+    public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
+                                 String requestTopic, String replyTopic, int timeoutMs,
+                                 boolean streamHealthcheckEnabled,
+                                 int streamHealthcheckIntervalMs, int streamHealthcheckTimeoutMs,
+                                 int streamHealthcheckMaxFailures,
+                                 long streamServerIdleTimeoutMs,
+                                 int consumerCount,
+                                 int pollIntervalMs, int streamBufferSize,
+                                 boolean mutateConsumerGroupPerChannelStart,
+                                 long consumerReadyTimeoutMs) throws InterruptedException {
         this.cleanupScheduler.scheduleAtFixedRate(this::cleanupStaleEntries, 30, 30, TimeUnit.SECONDS);
+        this.mutateConsumerGroupPerChannelStart = mutateConsumerGroupPerChannelStart;
+        this.consumerReadyTimeoutMs = Math.max(1L, consumerReadyTimeoutMs);
         this.requestTopic = requestTopic;
         this.replyTopic = replyTopic;
         this.timeoutMs = timeoutMs;
@@ -149,8 +182,10 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         consBase.putIfAbsent(KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         consBase.putIfAbsent(VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
         this.consumerGroupId = consBase.getProperty("group.id", "<undefined>");
-        this.channelConsumerGroupId = consumerGroupId + "-inst-" + UUID.randomUUID();
+        this.channelConsumerGroupId = resolveChannelConsumerGroupId(consumerGroupId, mutateConsumerGroupPerChannelStart);
         this.consumerConfigBase = consBase;
+        log.info("Reply consumer group: configured={} effective={} mutatePerChannelStart={}",
+                consumerGroupId, channelConsumerGroupId, mutateConsumerGroupPerChannelStart);
 
         int count = Math.max(1, consumerCount);
         this.consumerReadyLatch = new CountDownLatch(count);
@@ -164,10 +199,10 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         }
 
         // Ждём готовности консьюмеров (с таймаутом, чтобы не зависнуть навсегда)
-        if (!consumerReadyLatch.await(CONSUMER_READY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+        if (!consumerReadyLatch.await(this.consumerReadyTimeoutMs, TimeUnit.MILLISECONDS)) {
             long notReady = consumerReadyLatch.getCount();
             throw new IllegalStateException(
-                    "Kafka RPC reply consumer not ready within " + CONSUMER_READY_TIMEOUT_MS + " ms for topic="
+                    "Kafka RPC reply consumer not ready within " + this.consumerReadyTimeoutMs + " ms for topic="
                             + replyTopic + " (" + notReady + " of " + count + " consumers pending assignment)");
         }
         log.info("All {} consumers ready for topic={}", count, replyTopic);
@@ -195,6 +230,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this.consumerConfigBase = new Properties();
         this.consumerGroupId = "<test>";
         this.channelConsumerGroupId = "<test>";
+        this.mutateConsumerGroupPerChannelStart = false;
+        this.consumerReadyTimeoutMs = KafkaRpcConstants.DEFAULT_CONSUMER_READY_TIMEOUT_MS;
 
         // Для тестов: консьюмеры уже подписаны, сразу считаем их готовыми
         this.consumerReadyLatch = new CountDownLatch(consumers.size());
@@ -231,6 +268,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         private int consumerCount = 1;
         private int pollIntervalMs = KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS;
         private int streamBufferSize = KafkaRpcConstants.DEFAULT_STREAM_BUFFER_SIZE;
+        private boolean mutateConsumerGroupPerChannelStart = true;
+        private long consumerReadyTimeoutMs = KafkaRpcConstants.DEFAULT_CONSUMER_READY_TIMEOUT_MS;
 
         public Builder producerConfig(Properties config) { this.producerConfig = config; return this; }
         public Builder consumerConfig(Properties config) { this.consumerConfig = config; return this; }
@@ -245,6 +284,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         public Builder consumerCount(int count) { this.consumerCount = count; return this; }
         public Builder pollIntervalMs(int ms) { this.pollIntervalMs = ms; return this; }
         public Builder streamBufferSize(int size) { this.streamBufferSize = size; return this; }
+        public Builder mutateConsumerGroupPerChannelStart(boolean mutate) {
+            this.mutateConsumerGroupPerChannelStart = mutate;
+            return this;
+        }
+        public Builder consumerReadyTimeoutMs(long ms) {
+            this.consumerReadyTimeoutMs = ms;
+            return this;
+        }
 
         public PooledKafkaRpcChannel build() throws InterruptedException {
             if (producerConfig == null) throw new IllegalStateException("producerConfig is required");
@@ -253,8 +300,16 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             if (replyTopic == null) throw new IllegalStateException("replyTopic is required");
             return new PooledKafkaRpcChannel(producerConfig, consumerConfig, requestTopic, replyTopic,
                     timeoutMs, streamHealthcheckEnabled, streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs,
-                    streamHealthcheckMaxFailures, streamServerIdleTimeoutMs, consumerCount, pollIntervalMs, streamBufferSize);
+                    streamHealthcheckMaxFailures, streamServerIdleTimeoutMs, consumerCount, pollIntervalMs, streamBufferSize,
+                    mutateConsumerGroupPerChannelStart, consumerReadyTimeoutMs);
         }
+    }
+
+    static String resolveChannelConsumerGroupId(String configuredGroupId, boolean mutatePerChannelStart) {
+        if (!mutatePerChannelStart) {
+            return configuredGroupId;
+        }
+        return configuredGroupId + "-inst-" + UUID.randomUUID();
     }
 
     private void runConsumerLoop(int consumerIndex) {

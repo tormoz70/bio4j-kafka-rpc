@@ -105,11 +105,13 @@ public class KafkaRpcChannelPool {
         int pollIntervalMs = properties.getPollIntervalMsForClient(clientName);
         int streamBufferSize = properties.getStreamBufferSizeForClient(clientName);
         String consumerGroup = consumerConfig.getProperty("group.id", "<undefined>");
-        log.info("{} role=client client={} requestTopic={} replyTopic={} group={} consumerCount={}",
-                KafkaRpcLogEvents.CHANNEL_CREATED, clientName, requestTopic, replyTopic, consumerGroup, consumerCount);
+        boolean mutateConsumerGroup = properties.resolveMutateConsumerGroupOnChannelStart();
+        log.info("{} role=client client={} requestTopic={} replyTopic={} group={} consumerCount={} mutateConsumerGroup={} idleEvictionMs={}",
+                KafkaRpcLogEvents.CHANNEL_CREATED, clientName, requestTopic, replyTopic, consumerGroup, consumerCount,
+                mutateConsumerGroup, properties.getChannelPoolIdleTimeoutMs());
         return new PooledKafkaRpcChannel(producerConfig, consumerConfig, requestTopic, replyTopic, timeoutMs,
                 streamHealthcheckEnabled, streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckMaxFailures, streamServerIdleTimeoutMs,
-                consumerCount, pollIntervalMs, streamBufferSize);
+                consumerCount, pollIntervalMs, streamBufferSize, mutateConsumerGroup, properties.getConsumerReadyTimeoutMs());
     }
 
     @PreDestroy

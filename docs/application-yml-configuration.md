@@ -15,6 +15,11 @@
 - [9. Готовые шаблоны для dev/stage/prod](#9-готовые-шаблоны-для-devstageprod)
 - [10. Ролевые пресеты](#10-ролевые-пресеты)
 
+Дополнительно:
+
+- [Топология каналов, партиции и consumer-count](client-channel-topology-and-consumer-groups.md)
+- [Временная шкала `PooledKafkaRpcChannel.request`](pooled-kafka-rpc-request-timeline.md)
+
 ## 1. Быстрый минимум
 
 ### Минимум для клиента

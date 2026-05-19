@@ -103,3 +103,8 @@ request()
 
 - Запуск consumer-потоков: `PooledKafkaRpcChannel` конструктор, цикл `runConsumerLoop` — [`PooledKafkaRpcChannel.java`](../kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/PooledKafkaRpcChannel.java)
 - Синхронный вызов: метод `request(String, byte[], Map)`
+
+## См. также
+
+- [Топология каналов, партиции и consumer-count](client-channel-topology-and-consumer-groups.md)
+- [application-yml-configuration.md](application-yml-configuration.md)
