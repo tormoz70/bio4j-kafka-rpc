@@ -282,12 +282,15 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                     public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
                         log.info("REBALANCE: role=client index={} partitions assigned: {} group={}",
                                 consumerIndex, partitions, channelConsumerGroupId);
-                        if (!partitions.isEmpty()) {
-                            // Only consume replies produced after this channel is ready (cold-start safe).
-                            readyAwareConsumer.seekToEnd(partitions);
-                            partitions.forEach(tp ->
-                                    log.debug("Partition {} position after seekToEnd: {}", tp, readyAwareConsumer.position(tp)));
+                        if (partitions.isEmpty()) {
+                            log.info("REBALANCE: role=client index={} empty assignment, waiting for partitions group={}",
+                                    consumerIndex, channelConsumerGroupId);
+                            return;
                         }
+                        // Only consume replies produced after this channel is ready (cold-start safe).
+                        readyAwareConsumer.seekToEnd(partitions);
+                        partitions.forEach(tp ->
+                                log.debug("Partition {} position after seekToEnd: {}", tp, readyAwareConsumer.position(tp)));
 
                         if (consumerReadyLatch != null && firstStart.compareAndSet(true, false)) {
                             consumerReadyLatch.countDown();
