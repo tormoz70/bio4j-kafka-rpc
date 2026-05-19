@@ -25,11 +25,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
+import static org.apache.kafka.clients.consumer.ConsumerConfig.GROUP_ID_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG;
 import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
@@ -58,6 +60,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final int pollIntervalMs;
     private final int streamBufferSize;
     private final String consumerGroupId;
+    /** Unique group per channel instance so a replaced channel does not wait for the previous member to leave. */
+    private final String channelConsumerGroupId;
     private final ConcurrentHashMap<String, CompletableFuture<byte[]>> pending = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, BlockingQueue<StreamChunk>> streamQueues = new ConcurrentHashMap<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -145,6 +149,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         consBase.putIfAbsent(KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         consBase.putIfAbsent(VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class.getName());
         this.consumerGroupId = consBase.getProperty("group.id", "<undefined>");
+        this.channelConsumerGroupId = consumerGroupId + "-inst-" + UUID.randomUUID();
         this.consumerConfigBase = consBase;
 
         int count = Math.max(1, consumerCount);
@@ -160,11 +165,12 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
         // Ждём готовности консьюмеров (с таймаутом, чтобы не зависнуть навсегда)
         if (!consumerReadyLatch.await(CONSUMER_READY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-            log.warn("Only {} of {} consumers became ready in time for topic={}",
-                    count - consumerReadyLatch.getCount(), count, replyTopic);
-        } else {
-            log.info("All {} consumers ready for topic={}", count, replyTopic);
+            long notReady = consumerReadyLatch.getCount();
+            throw new IllegalStateException(
+                    "Kafka RPC reply consumer not ready within " + CONSUMER_READY_TIMEOUT_MS + " ms for topic="
+                            + replyTopic + " (" + notReady + " of " + count + " consumers pending assignment)");
         }
+        log.info("All {} consumers ready for topic={}", count, replyTopic);
     }
 
     // For tests: allows injecting mock producer/consumers without Kafka broker.
@@ -188,6 +194,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         this.producer = producer;
         this.consumerConfigBase = new Properties();
         this.consumerGroupId = "<test>";
+        this.channelConsumerGroupId = "<test>";
 
         // Для тестов: консьюмеры уже подписаны, сразу считаем их готовыми
         this.consumerReadyLatch = new CountDownLatch(consumers.size());
@@ -260,6 +267,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             try {
                 Properties cons = new Properties();
                 cons.putAll(consumerConfigBase);
+                cons.put(GROUP_ID_CONFIG, channelConsumerGroupId);
                 consumer = KafkaRpcConsumerFactory.create(cons);
                 activeConsumers.add(consumer);
                 Consumer<String, byte[]> readyAwareConsumer = consumer;
@@ -267,29 +275,30 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                     @Override
                     public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
                         log.info("REBALANCE: role=client index={} partitions revoked: {} group={}",
-                                consumerIndex, partitions, consumerGroupId);
+                                consumerIndex, partitions, channelConsumerGroupId);
                     }
 
                     @Override
                     public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
                         log.info("REBALANCE: role=client index={} partitions assigned: {} group={}",
-                                consumerIndex, partitions, consumerGroupId);
-                        partitions.forEach(tp -> {
-                            long pos = readyAwareConsumer.position(tp);
-                            log.debug("Partition {} position after assign: {}", tp, pos);
-                        });
+                                consumerIndex, partitions, channelConsumerGroupId);
+                        if (!partitions.isEmpty()) {
+                            // Only consume replies produced after this channel is ready (cold-start safe).
+                            readyAwareConsumer.seekToEnd(partitions);
+                            partitions.forEach(tp ->
+                                    log.debug("Partition {} position after seekToEnd: {}", tp, readyAwareConsumer.position(tp)));
+                        }
 
-                        // Сигнал готовности только после фактического assign.
                         if (consumerReadyLatch != null && firstStart.compareAndSet(true, false)) {
                             consumerReadyLatch.countDown();
                             log.info("{} role=client index={} READY topic={} group={} assigned={}",
-                                    KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, consumerGroupId, partitions);
+                                    KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, channelConsumerGroupId, partitions);
                         }
                     }
                 });
 
                 log.info("{} role=client index={} topic={} group={}",
-                        KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, consumerGroupId);
+                        KafkaRpcLogEvents.CONSUMER_STARTED, consumerIndex, replyTopic, channelConsumerGroupId);
                 backoffMs = CONSUMER_RECOVERY_INITIAL_BACKOFF_MS;
                 runConsumer(consumer);
             } catch (WakeupException e) {
@@ -298,14 +307,14 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                     break;
                 }
                 log.warn("{} role=client reason=wakeup index={} topic={} group={}",
-                        KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId);
+                        KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, channelConsumerGroupId);
                 sleepRecoveryBackoff(backoffMs);
                 backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
             } catch (Exception e) {
                 log.debug("{} --- Exception catch", KafkaRpcLogEvents.RECEIVE, e);
                 if (!closed.get()) {
                     log.warn("{} role=client reason=failure index={} topic={} group={} backoffMs={}",
-                            KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId, backoffMs, e);
+                            KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, channelConsumerGroupId, backoffMs, e);
                     sleepRecoveryBackoff(backoffMs);
                     backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
                 }
@@ -642,19 +651,19 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             for (Thread t : consumerThreads) {
                 t.interrupt();
             }
-            // Ждём завершения с таймаутом
-            long deadline = System.currentTimeMillis() + 2000; // 2 секунды
             for (Thread t : consumerThreads) {
-                long remaining = deadline - System.currentTimeMillis();
-                if (remaining > 0) {
-                    try {
-                        t.join(remaining);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
+                try {
+                    t.join(10_000);
+                    if (t.isAlive()) {
+                        log.warn("{} role=client topic={} reason=consumer-thread-join-timeout thread={}",
+                                KafkaRpcLogEvents.CONSUMER_CLOSING, replyTopic, t.getName());
                     }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
+            consumerThreads.clear();
 
             cleanupScheduler.shutdownNow();
             producer.close();

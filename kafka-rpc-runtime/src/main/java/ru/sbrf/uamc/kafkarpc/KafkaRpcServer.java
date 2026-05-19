@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -53,6 +54,9 @@ public class KafkaRpcServer implements AutoCloseable {
     private final String consumerGroupId;
     private final int maxConcurrentStreams;
     private final boolean manualCommitEnabled;
+    /** Offsets to commit on the consumer poll thread (KafkaConsumer is not thread-safe). */
+    private final ConcurrentHashMap<Consumer<String, byte[]>, ConcurrentHashMap<TopicPartition, Long>> pendingCommits =
+            new ConcurrentHashMap<>();
     private Thread streamIdleThread;
     private final ExecutorService handlerExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
@@ -273,12 +277,15 @@ public class KafkaRpcServer implements AutoCloseable {
                 for (ConsumerRecord<String, byte[]> record : records) {
                     handlerExecutor.submit(() -> processRecord(consumer, record));
                 }
+                flushPendingCommits(consumer);
             } catch (org.apache.kafka.common.errors.WakeupException e) {
+                flushPendingCommits(consumer);
                 break;
             } catch (Exception e) {
                 log.error("{} topic={}", KafkaRpcLogEvents.REQUEST_PROCESSING_FAILED, requestTopic, e);
             }
         }
+        flushPendingCommits(consumer);
     }
 
     private void processRecord(Consumer<String, byte[]> consumer, ConsumerRecord<String, byte[]> record) {
@@ -297,14 +304,14 @@ public class KafkaRpcServer implements AutoCloseable {
 
         if (correlationId == null) {
             log.warn("{} reason=missing-correlation-id topic={}", KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic);
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
 
         if (record.value() == null) {
             log.warn("{} reason=null-body topic={} correlationId={}",
                     KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic, correlationId);
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
 
@@ -324,7 +331,7 @@ public class KafkaRpcServer implements AutoCloseable {
                 log.warn("{} reason=no-handler topic={} method={} correlationId={}",
                         KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic, method, correlationId);
             }
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
 
@@ -335,7 +342,7 @@ public class KafkaRpcServer implements AutoCloseable {
                                    String correlationId, String method, String replyTopic) {
         String streamId = KafkaRpcConstants.getHeader(record, KafkaRpcConstants.HEADER_STREAM_ID);
         if (streamId == null) {
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
 
@@ -345,7 +352,7 @@ public class KafkaRpcServer implements AutoCloseable {
         }
 
         if (replyTopic == null || replyTopic.isEmpty()) {
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
 
@@ -378,14 +385,14 @@ public class KafkaRpcServer implements AutoCloseable {
         if (replyTopic == null || replyTopic.isEmpty()) {
             log.warn("{} reason=missing-reply-topic type=stream topic={} correlationId={}",
                     KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic, correlationId);
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
         Long idleTimeoutMs = parseStreamServerIdleTimeoutMs(record);
         if (idleTimeoutMs == null) {
             log.warn("{} reason=invalid-header type=stream topic={} correlationId={} header={}",
                     KafkaRpcLogEvents.REQUEST_DROPPED, requestTopic, correlationId, KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS);
-            commitRecord(consumer, record);
+            scheduleCommit(consumer, record);
             return;
         }
         if (activeStreams.size() >= maxConcurrentStreams && !activeStreams.containsKey(correlationId)) {
@@ -400,7 +407,7 @@ public class KafkaRpcServer implements AutoCloseable {
         StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method, streamOrdered);
         activeStreams.put(correlationId, new StreamContext(sink, idleTimeoutMs));
         byte[] request = record.value();
-        commitRecord(consumer, record);
+        scheduleCommit(consumer, record);
         handlerExecutor.submit(() -> {
             try {
                 streamHandler.handle(correlationId, request, sink);
@@ -426,7 +433,7 @@ public class KafkaRpcServer implements AutoCloseable {
                         log.debug("{} correlationId={} method={} topic={} reason=oneway-completed",
                                 KafkaRpcLogEvents.RECEIVE, correlationId, method, requestTopic);
                     }
-                    commitRecord(consumer, record);
+                    scheduleCommit(consumer, record);
                     return;
                 }
                 log.warn("{} correlationId={} method={} topic={} replyTopic={} reason=handler-returned-null",
@@ -438,7 +445,7 @@ public class KafkaRpcServer implements AutoCloseable {
             if (replyTopic == null || replyTopic.isEmpty()) {
                 log.warn("{} reason=missing-reply-topic correlationId={} topic={}",
                         KafkaRpcLogEvents.RESPONSE_DROPPED, correlationId, requestTopic);
-                commitRecord(consumer, record);
+                scheduleCommit(consumer, record);
                 return;
             }
             ProducerRecord<String, byte[]> reply = new ProducerRecord<>(replyTopic, record.key(), response);
@@ -464,7 +471,7 @@ public class KafkaRpcServer implements AutoCloseable {
             if (replyTopic != null && !replyTopic.isEmpty()) {
                 sendErrorReply(consumer, record, replyTopic, record.key(), correlationId, method, e);
             } else {
-                commitRecord(consumer, record);
+                scheduleCommit(consumer, record);
             }
         }
     }
@@ -514,21 +521,41 @@ public class KafkaRpcServer implements AutoCloseable {
             callback.onCompletion(metadata, exception);
             if (exception == null) {
                 onSuccess.run();
-                commitRecord(consumer, requestRecord);
+                scheduleCommit(consumer, requestRecord);
             }
         });
     }
 
-    private void commitRecord(Consumer<String, byte[]> consumer, ConsumerRecord<String, byte[]> record) {
+    private void scheduleCommit(Consumer<String, byte[]> consumer, ConsumerRecord<String, byte[]> record) {
         if (!manualCommitEnabled) {
             return;
         }
+        TopicPartition tp = new TopicPartition(record.topic(), record.partition());
+        long nextOffset = record.offset() + 1;
+        pendingCommits
+                .computeIfAbsent(consumer, c -> new ConcurrentHashMap<>())
+                .merge(tp, nextOffset, Math::max);
+    }
+
+    private void flushPendingCommits(Consumer<String, byte[]> consumer) {
+        if (!manualCommitEnabled) {
+            return;
+        }
+        ConcurrentHashMap<TopicPartition, Long> offsets = pendingCommits.get(consumer);
+        if (offsets == null || offsets.isEmpty()) {
+            return;
+        }
+        Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
+        offsets.forEach((tp, offset) -> toCommit.put(tp, new OffsetAndMetadata(offset)));
+        offsets.clear();
         try {
-            TopicPartition tp = new TopicPartition(record.topic(), record.partition());
-            consumer.commitSync(Map.of(tp, new OffsetAndMetadata(record.offset() + 1)));
+            consumer.commitSync(toCommit);
         } catch (Exception e) {
-            log.error("{} topic={} partition={} offset={}",
-                    KafkaRpcLogEvents.OFFSET_COMMIT_FAILED, record.topic(), record.partition(), record.offset(), e);
+            log.error("{} topic={} partitions={}",
+                    KafkaRpcLogEvents.OFFSET_COMMIT_FAILED, requestTopic, toCommit.keySet(), e);
+            offsets.forEach((tp, offset) -> pendingCommits
+                    .computeIfAbsent(consumer, c -> new ConcurrentHashMap<>())
+                    .merge(tp, offset, Math::max));
         }
     }
 
