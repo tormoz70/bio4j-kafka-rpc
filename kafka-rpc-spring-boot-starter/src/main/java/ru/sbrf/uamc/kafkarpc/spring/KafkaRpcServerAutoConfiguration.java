@@ -46,6 +46,7 @@ public class KafkaRpcServerAutoConfiguration {
                 var producerConfig = properties.getProducerPropertiesForServer(serviceName);
                 int consumerCount = properties.getServerConsumerCountForService(serviceName);
                 int pollIntervalMs = properties.getPollIntervalMsForService(serviceName);
+                int maxConcurrentStreams = properties.getMaxConcurrentStreamsForService(serviceName);
                 String consumerGroup = consumerConfig.getProperty("group.id", "<undefined>");
 
                 var server = new KafkaRpcServer(
@@ -54,7 +55,8 @@ public class KafkaRpcServerAutoConfiguration {
                         service.getHandlers(),
                         service.getStreamHandlers(),
                         consumerCount,
-                        pollIntervalMs);
+                        pollIntervalMs,
+                        maxConcurrentStreams);
                 servers.add(server);
                 server.start();
                 log.info("{} service={} topic={} group={} consumerCount={}",

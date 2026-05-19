@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -67,6 +68,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final LongAdder duplicateCorrelationIdCount = new LongAdder();
     private final LongAdder requestTimeoutCount = new LongAdder();
     private final LongAdder streamErrorCount = new LongAdder();
+    private final CopyOnWriteArrayList<Consumer<String, byte[]>> activeConsumers = new CopyOnWriteArrayList<>();
 
     public PooledKafkaRpcChannel(Properties producerConfig, Properties consumerConfig,
                                  String requestTopic, String replyTopic, int timeoutMs) throws InterruptedException {
@@ -192,6 +194,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
         for (int i = 0; i < consumers.size(); i++) {
             Consumer<String, byte[]> consumer = consumers.get(i);
+            activeConsumers.add(consumer);
             consumer.subscribe(Collections.singletonList(replyTopic));
             final int index = i;
             Thread t = Thread.ofVirtual()
@@ -258,6 +261,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 Properties cons = new Properties();
                 cons.putAll(consumerConfigBase);
                 consumer = KafkaRpcConsumerFactory.create(cons);
+                activeConsumers.add(consumer);
                 Consumer<String, byte[]> readyAwareConsumer = consumer;
                 consumer.subscribe(Collections.singletonList(replyTopic), new ConsumerRebalanceListener() {
                     @Override
@@ -290,12 +294,13 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 runConsumer(consumer);
             } catch (WakeupException e) {
                 log.debug("{} --- WakeupException catch", KafkaRpcLogEvents.RECEIVE, e);
-                if (!closed.get()) {
-                    log.warn("{} role=client reason=wakeup index={} topic={} group={}",
-                            KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId);
-                    sleepRecoveryBackoff(backoffMs);
-                    backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
+                if (closed.get()) {
+                    break;
                 }
+                log.warn("{} role=client reason=wakeup index={} topic={} group={}",
+                        KafkaRpcLogEvents.CONSUMER_RECREATING, consumerIndex, replyTopic, consumerGroupId);
+                sleepRecoveryBackoff(backoffMs);
+                backoffMs = Math.min(backoffMs * 2, CONSUMER_RECOVERY_MAX_BACKOFF_MS);
             } catch (Exception e) {
                 log.debug("{} --- Exception catch", KafkaRpcLogEvents.RECEIVE, e);
                 if (!closed.get()) {
@@ -306,6 +311,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 }
             } finally {
                 if (consumer != null) {
+                    activeConsumers.remove(consumer);
                     consumer.close();
                     log.debug("{} --- consumer closed!", KafkaRpcLogEvents.CONSUMER_STARTING);
                 }
@@ -376,6 +382,9 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                 f.complete(r.value());
                             }
                         }
+                    } else if (!streamEnd && errorMsg == null) {
+                        log.warn("{} role=client correlationId={} topic={} reason=no-pending-request",
+                                KafkaRpcLogEvents.ORPHAN_REPLY, correlationId, replyTopic);
                     }
                 } catch (Exception e) {
                     log.warn("{} role=client reason=unexpected-consumer-exception topic={}",
@@ -629,6 +638,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             pending.clear();
             pendingTimestamps.clear();
 
+            activeConsumers.forEach(Consumer::wakeup);
             for (Thread t : consumerThreads) {
                 t.interrupt();
             }
@@ -680,5 +690,10 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
     int activeStreamCount() {
         return streamQueues.size();
+    }
+
+    /** True when there are in-flight unary requests or active streams on this channel. */
+    public boolean isInUse() {
+        return pendingRequestCount() > 0 || activeStreamCount() > 0;
     }
 }

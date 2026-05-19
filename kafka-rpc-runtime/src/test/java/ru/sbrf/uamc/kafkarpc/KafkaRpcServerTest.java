@@ -145,4 +145,51 @@ class KafkaRpcServerTest {
             assertNotNull(sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_ERROR));
         });
     }
+
+    @Test
+    void onewayWithNullResponseAndNoReplyTopicSendsNothing() {
+        String correlationId = "corr-oneway";
+        String method = "Service/Notify";
+        byte[] requestData = "request".getBytes();
+
+        var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
+                method, (cid, req) -> null);
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers);
+        server.start();
+
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
+
+        await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
+                assertEquals(0, producer.history().size()));
+    }
+
+    @Test
+    void healthcheckForUnknownStreamStillReplies() {
+        String streamId = "stream-missing";
+        String correlationId = "hc-1";
+        String method = "Service/Method" + KafkaRpcConstants.STREAM_HEALTHCHECK_SUFFIX;
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, Map.of());
+        server.start();
+
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_STREAM_ID, streamId.getBytes()));
+        consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, new byte[0], headers, java.util.Optional.empty()));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            var sentRecord = producer.history().get(0);
+            assertEquals(REPLY_TOPIC, sentRecord.topic());
+            assertNotNull(sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_STREAM_NOT_FOUND));
+        });
+    }
 }

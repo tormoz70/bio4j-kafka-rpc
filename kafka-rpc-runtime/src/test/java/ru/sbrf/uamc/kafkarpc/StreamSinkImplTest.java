@@ -16,7 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+
+import java.time.Duration;
 
 class StreamSinkImplTest {
 
@@ -62,5 +65,18 @@ class StreamSinkImplTest {
         assertInstanceOf(IOException.class, io);
         IOException error = (IOException) io;
         assertEquals("Failed to send stream chunk", error.getMessage());
+    }
+
+    @Test
+    @Timeout(2)
+    void cancelNotifiesClientWithErrorHeader() {
+        MockProducer<String, byte[]> producer = new MockProducer<>(true, new StringSerializer(), new ByteArraySerializer());
+        StreamSinkImpl sink = new StreamSinkImpl(producer, "reply", "corr-3", "Svc/Stream", true);
+
+        sink.cancel();
+
+        await().atMost(Duration.ofSeconds(1)).untilAsserted(() -> assertEquals(1, producer.history().size()));
+        var record = producer.history().get(0);
+        assertNotNull(record.headers().lastHeader(KafkaRpcConstants.HEADER_ERROR));
     }
 }

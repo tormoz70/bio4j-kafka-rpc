@@ -8,6 +8,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
+import static org.apache.kafka.clients.consumer.ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG;
 import static org.apache.kafka.clients.consumer.ConsumerConfig.*;
 import static org.apache.kafka.clients.producer.ProducerConfig.*;
 import static org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG;
@@ -31,6 +32,9 @@ public class KafkaRpcProperties {
 
     /** Number of consumer threads for server (request topic). Enables scaling via partitioning. Default 1. */
     private int serverConsumerCount = 1;
+
+    /** Maximum concurrent server-streaming RPCs per server instance. Overridable per service. */
+    private int maxConcurrentStreams = KafkaRpcConstants.DEFAULT_MAX_CONCURRENT_STREAMS;
 
     /** Default request timeout in milliseconds (client). */
     private int timeoutMs = 30_000;
@@ -184,10 +188,22 @@ public class KafkaRpcProperties {
         p.put(HEARTBEAT_INTERVAL_MS_CONFIG, "5000");
         p.put(SESSION_TIMEOUT_MS_CONFIG, "60000");
         p.put(MAX_POLL_INTERVAL_MS_CONFIG, "300000");
+        if (forServer) {
+            p.put(ENABLE_AUTO_COMMIT_CONFIG, "false");
+        }
         if (consumer != null) {
             consumer.forEach(p::setProperty);
         }
         return p;
+    }
+
+    /** Max concurrent streams for this service. Uses service override or global default. */
+    public int getMaxConcurrentStreamsForService(String serviceName) {
+        var svc = getServiceConfig(serviceName);
+        if (svc != null && svc.getMaxConcurrentStreams() != null) {
+            return Math.max(1, svc.getMaxConcurrentStreams());
+        }
+        return Math.max(1, maxConcurrentStreams);
     }
 
     /** Timeout for a client (ms). Uses client-specific timeout if set, else global timeoutMs. */
@@ -384,5 +400,7 @@ public class KafkaRpcProperties {
         private Map<String, String> producer = new HashMap<>();
         /** Per-service consumer overrides (on top of global kafka-rpc.consumer). */
         private Map<String, String> consumer = new HashMap<>();
+        /** Max concurrent server-streaming RPCs. Override global kafka-rpc.max-concurrent-streams. */
+        private Integer maxConcurrentStreams;
     }
 }

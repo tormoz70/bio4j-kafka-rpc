@@ -146,6 +146,9 @@ public class KafkaRpcChannelPool {
         }
         long now = System.currentTimeMillis();
         channels.forEach((client, channel) -> {
+            if (channel.isInUse()) {
+                return;
+            }
             Long lastAccess = lastAccessMs.get(client);
             if (lastAccess != null && now - lastAccess >= idleTimeoutMs) {
                 if (channels.remove(client, channel)) {

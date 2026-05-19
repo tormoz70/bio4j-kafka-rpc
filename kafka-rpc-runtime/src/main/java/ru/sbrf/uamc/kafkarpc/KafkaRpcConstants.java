@@ -27,6 +27,8 @@ public class KafkaRpcConstants {
     public static final String HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS = "kafka-rpc-stream-server-idle-timeout-ms";
     /** Client sends with stream request: "true" = ordered (all chunks to one partition), "false" = scalable (chunks may go to any partition). Default "true". */
     public static final String HEADER_STREAM_ORDERED = "kafka-rpc-stream-ordered";
+    /** Server sends on healthcheck reply when the stream is no longer active. */
+    public static final String HEADER_STREAM_NOT_FOUND = "kafka-rpc-stream-not-found";
 
     public static final String STREAM_HEALTHCHECK_SUFFIX = "/healthcheck";
 
@@ -42,6 +44,8 @@ public class KafkaRpcConstants {
 
     public static final int DEFAULT_POLL_INTERVAL_MS = 100;
     public static final int DEFAULT_STREAM_BUFFER_SIZE = 1024;
+    /** Default maximum concurrent server-streaming RPCs per {@link KafkaRpcServer} instance. */
+    public static final int DEFAULT_MAX_CONCURRENT_STREAMS = 1024;
 
     /**
      * Default maximum Kafka message size (bytes) used by both producer and consumer.

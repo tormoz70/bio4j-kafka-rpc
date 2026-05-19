@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 @Slf4j
 final class StreamSinkImpl implements StreamSink {
 
+    private static final String STREAM_CANCELLED_MESSAGE = "Stream cancelled";
+
     private final Producer<String, byte[]> producer;
     private final String replyTopic;
     private final String correlationId;
@@ -63,11 +65,35 @@ final class StreamSinkImpl implements StreamSink {
 
     @Override
     public void cancel() {
-        cancelled.set(true);
+        if (!cancelled.compareAndSet(false, true)) {
+            return;
+        }
+        if (ended.get()) {
+            return;
+        }
+        notifyClientCancelled();
     }
 
     @Override
     public boolean isCancelled() {
         return cancelled.get();
+    }
+
+    private void notifyClientCancelled() {
+        try {
+            String key = ordered ? correlationId : null;
+            ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, new byte[0]);
+            record.headers()
+                    .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
+                    .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes(StandardCharsets.UTF_8) : new byte[0])
+                    .add(KafkaRpcConstants.HEADER_ERROR, STREAM_CANCELLED_MESSAGE.getBytes(StandardCharsets.UTF_8));
+            producer.send(record, (metadata, exception) -> {
+                if (exception != null) {
+                    log.warn("{} streamId={} topic={}", KafkaRpcLogEvents.SEND_FAILED, correlationId, replyTopic, exception);
+                }
+            });
+        } catch (Exception e) {
+            log.warn("{} streamId={} topic={}", KafkaRpcLogEvents.SEND_FAILED, correlationId, replyTopic, e);
+        }
     }
 }

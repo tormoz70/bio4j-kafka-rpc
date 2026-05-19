@@ -33,4 +33,7 @@ public class KafkaRpcLogEvents {
     public static final String REPLY_SEND_FAILED = "event=kafka.rpc.reply.send-failed";
     public static final String DUPLICATE_CORRELATION_ID = "event=kafka.rpc.duplicate-correlation-id";
     public static final String REQUEST_TIMEOUT = "event=kafka.rpc.request-timeout";
+    public static final String ORPHAN_REPLY = "event=kafka.rpc.orphan-reply";
+    public static final String STREAM_REJECTED = "event=kafka.rpc.stream.rejected";
+    public static final String OFFSET_COMMIT_FAILED = "event=kafka.rpc.offset.commit-failed";
 }
