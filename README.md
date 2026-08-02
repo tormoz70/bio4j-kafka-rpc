@@ -3,51 +3,50 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://openjdk.org/)
 [![Kafka](https://img.shields.io/badge/Apache%20Kafka-3.9-black.svg)](https://kafka.apache.org/)
-[![Release](https://img.shields.io/github/v/release/tormoz70/bio4j-kafka-rpc?include_prereleases)](https://github.com/tormoz70/bio4j-kafka-rpc/releases)
+[![Release](https://img.shields.io/github/v/release/tormoz70/bio4j-kafka-rpc)](https://github.com/tormoz70/bio4j-kafka-rpc/releases)
 
-**gRPC-style RPC over Apache Kafka for Java 21+.** Protocol Buffers serialization, protoc codegen, unary / oneway / server-streaming, and an optional Spring Boot starter.
+**gRPC-style RPC over Apache Kafka for Java 21+.**
 
-Библиотека для RPC поверх Apache Kafka, аналогичная gRPC по API. Использует Protocol Buffers для сериализации и генерирует Java-код из `.proto` файлов.
+Define services in `.proto`, generate client stubs and server bases with a protoc plugin, and run unary, oneway, and server-streaming calls over Kafka request/reply topics. Optional Spring Boot starter adds auto-configuration and a channel pool.
 
-**Особенности:**
-- Java 21+
-- Gradle (Groovy DSL)
-- Lombok
-- Unary RPC, oneway и server-streaming
-- protoc-плагин для генерации клиентских stub'ов и серверной базы
-- Runtime на `kafka-clients`
-- Spring Boot starter с пулом каналов и автоконфигурацией
-- License: Apache 2.0
+[Example project](https://github.com/tormoz70/bio4j-kafka-rpc-example) · [Release notes](https://github.com/tormoz70/bio4j-kafka-rpc/releases) · [Русская версия](README.ru.md)
 
-## Модули
+## Why Kafka RPC?
 
-| Модуль | Описание |
-|--------|----------|
-| `kafka-rpc-runtime` | Runtime: KafkaRpcChannel, KafkaRpcServer |
-| `kafka-rpc-spring-boot-starter` | Spring Boot автоконфигурация, KafkaRpcProperties, KafkaRpcChannelPool |
-| `kafka-rpc-protoc` | protoc-плагин для генерации кода |
+| Need | Kafka RPC |
+|------|-----------|
+| Familiar API | Proto services → stubs / `ServiceBase`, similar to gRPC |
+| Transport | Apache Kafka (durable, scalable, already in many stacks) |
+| Call types | Unary, oneway, server-streaming |
+| Integration | Plain `kafka-clients` or Spring Boot starter |
+| Codegen | Dedicated `protoc-gen-kafka-rpc` plugin |
 
-## Настройка проекта в Gradle (клиент и сервер)
+## Features
 
-Ниже — как подключить библиотеку и настроить генерацию кода в зависимости от того, собираете ли вы только клиента, только сервер или оба в одном проекте.
+- Java 21+, Gradle (Groovy DSL), Lombok
+- Unary RPC, oneway, and server-streaming
+- protoc plugin for client stubs and server base classes
+- Runtime on Apache Kafka `kafka-clients`
+- Spring Boot starter with channel pool and YAML config
+- Apache License 2.0
 
-### Общее
+## Modules
 
-- **Java:** 21+ (в корневом `build.gradle` или в проекте задайте `java.toolchain.languageVersion = JavaLanguageVersion.of(21)`).
-- **Плагин Protobuf:** нужен для генерации stub'ов и серверной базы из `.proto`.
+| Module | Description |
+|--------|-------------|
+| `kafka-rpc-runtime` | Core runtime: `KafkaRpcChannel`, `PooledKafkaRpcChannel`, `KafkaRpcServer` |
+| `kafka-rpc-spring-boot-starter` | Auto-configuration, `KafkaRpcProperties`, `KafkaRpcChannelPool` |
+| `kafka-rpc-protoc` | protoc plugin for code generation |
 
-```groovy
-plugins {
-    id 'java'
-    id 'com.google.protobuf' version '0.9.4'
-}
-```
+Coordinates: `ru.sbrf.uamc:<module>:1.7`
 
-### Проект-клиент
+> Artifacts are published to your Maven repository (or built from source). Version `1.7` matches the [GitHub Release](https://github.com/tormoz70/bio4j-kafka-rpc/releases/tag/v1.7).
 
-Зависимости: runtime (или Spring Boot starter, если клиент в Spring-приложении). Для генерации кода — protoc-плагин и артефакт `kafka-rpc-protoc`.
+## Quick start
 
-**Только runtime (без Spring):**
+### 1. Dependencies
+
+**Runtime only:**
 
 ```groovy
 dependencies {
@@ -57,7 +56,7 @@ dependencies {
 }
 ```
 
-**С Spring Boot:**
+**Spring Boot:**
 
 ```groovy
 plugins {
@@ -72,19 +71,82 @@ dependencies {
 }
 ```
 
-Генерация кода (см. раздел «Генерация кода» ниже) создаёт stub'ы для клиента (`GreeterKafkaRpc.Stub`, канал и т.д.). Конфигурация топиков и Kafka — через `application.yml` (при использовании starter) или вручную.
+### 2. Proto service
 
-### Проект-сервер
+```protobuf
+syntax = "proto3";
 
-Те же зависимости, что и для клиента: либо `kafka-rpc-runtime` (standalone), либо `kafka-rpc-spring-boot-starter` (Spring). Генерация кода из тех же `.proto` даёт серверную базу (`GreeterKafkaRpc.ServiceBase`), которую вы наследуете и реализуете методы RPC.
+option java_package = "com.example";
+option java_multiple_files = true;
 
-Отдельных «серверных» зависимостей нет — один и тот же артефакт используется и на клиенте, и на сервере.
+service Greeter {
+  rpc GetGreeting (GetGreetingRequest) returns (GetGreetingResponse);
+}
 
-### Генерация кода (protoc-плагин)
+message GetGreetingRequest { string name = 1; }
+message GetGreetingResponse { string greeting = 1; }
+```
 
-Плагин генерирует и клиентские stub'ы, и серверную базу. Подключение плагина и путь к `protoc-gen-kafka-rpc` зависят от того, как вы подключаете `kafka-rpc-protoc`:
+### 3. Generate code
 
-**Вариант A — мультипроект Gradle (как в этом репозитории):**
+Enable the Protobuf Gradle plugin and wire `protoc-gen-kafka-rpc` (see [Gradle setup](#gradle-setup-client--server) below). Generation produces:
+
+- Client: `GreeterKafkaRpc.Stub`
+- Server: `GreeterKafkaRpc.ServiceBase`
+
+### 4. Server
+
+```java
+var impl = new GreeterKafkaRpc.ServiceBase() {
+  @Override protected GetGreetingResponse getGreeting(GetGreetingRequest req) {
+    return GetGreetingResponse.newBuilder().setGreeting("Hello, " + req.getName()).build();
+  }
+};
+String requestTopic = "greeter.request"; // Spring: kafka-rpc.service.<name>.request-topic
+var server = new KafkaRpcServer(consumerConfig, producerConfig,
+    requestTopic, impl.getHandlers());
+server.start();
+```
+
+The reply topic always comes from the client request header — the server does not configure it. Service name defaults to the proto service name in lowercase (e.g. `greeter`).
+
+The server handles only messages with a known `kafka-rpc-method`. Unknown or unregistered methods are ignored and logged at `warn`. There is no fallback to a “single handler”.
+
+### 5. Client
+
+Prefer a pooled channel from `KafkaRpcChannelPool` (Spring) or build `PooledKafkaRpcChannel` manually:
+
+```java
+try (var channel = PooledKafkaRpcChannel.builder()
+    .producerConfig(properties.getProducerPropertiesForClient("greeter"))
+    .consumerConfig(properties.getConsumerPropertiesForClientPooled("greeter"))
+    .requestTopic(properties.getRequestTopicForClient("greeter"))
+    .replyTopic(properties.getReplyTopicForClient("greeter"))
+    .timeoutMs(properties.getTimeoutMsForClient("greeter"))
+    .build()) {
+  var stub = new GreeterKafkaRpc.Stub(channel);
+  var resp = stub.getGreeting(GetGreetingRequest.newBuilder().setName("World").build());
+  System.out.println(resp.getGreeting());
+}
+```
+
+## Gradle setup (client & server)
+
+Requirements:
+
+- **Java 21+** (`java.toolchain.languageVersion = JavaLanguageVersion.of(21)`)
+- **Protobuf Gradle plugin** for stubs and server base generation
+
+```groovy
+plugins {
+    id 'java'
+    id 'com.google.protobuf' version '0.9.4'
+}
+```
+
+Client and server use the **same** artifacts — there is no separate “server-only” dependency. The same `.proto` yields both stubs and `ServiceBase`.
+
+### Option A — multi-project (this repository)
 
 ```groovy
 evaluationDependsOn ':kafka-rpc-protoc'
@@ -124,68 +186,14 @@ protobuf {
 }
 ```
 
-**Вариант B — отдельный проект, плагин из репозитория:**
+### Option B — standalone project (plugin from a repository)
 
-Сначала соберите и опубликуйте `kafka-rpc-protoc` (или используйте готовый артефакт). Затем в проекте клиента/сервера:
+Build and publish `kafka-rpc-protoc` (or use a published artifact), then:
 
 ```groovy
 dependencies {
     implementation 'ru.sbrf.uamc:kafka-rpc-runtime:1.7'
-    // для генерации (compileOnly или отдельная конфигурация):
     compileOnly 'ru.sbrf.uamc:kafka-rpc-protoc:1.7'
-}
-
-protobuf {
-    protoc { artifact = "com.google.protobuf:protoc:3.25.8" }
-    plugins {
-        kafkaRpc { path = '<путь к исполняемому файлу protoc-gen-kafka-rpc>' }
-    }
-    generateProtoTasks {
-        ofSourceSet('main').each { task ->
-            task.builtins { java {} }
-            task.plugins { kafkaRpc {} }
-        }
-    }
-}
-```
-
-Путь к `protoc-gen-kafka-rpc` укажите после распаковки/сборки плагина (скрипт или jar, см. `kafka-rpc-protoc` в репозитории).
-
-### Один проект (и клиент, и сервер)
-
-Как в отдельном проекте `bio4j-kafka-rpc-example`: подключаете `kafka-rpc-spring-boot-starter` (или runtime + свои конфиги), настраиваете protobuf-плагин один раз. Из одних и тех же `.proto` получаете и stub'ы для клиента, и `ServiceBase` для сервера; в приложении используете и те, и другие (конфигурация через `kafka-rpc.clients.*` и `kafka-rpc.service.*` в `application.yml`).
-
-## Использование
-
-### 1. Зависимости
-
-```groovy
-implementation 'ru.sbrf.uamc:kafka-rpc-runtime:1.7'
-```
-
-### 2. proto-файл
-
-```protobuf
-syntax = "proto3";
-
-option java_package = "com.example";
-option java_multiple_files = true;
-
-service Greeter {
-  rpc GetGreeting (GetGreetingRequest) returns (GetGreetingResponse);
-}
-
-message GetGreetingRequest { string name = 1; }
-message GetGreetingResponse { string greeting = 1; }
-```
-
-### 3. Генерация кода (Gradle)
-
-Полная настройка для клиента, сервера и мультипроекта — в разделе [Настройка проекта в Gradle (клиент и сервер)](#настройка-проекта-в-gradle-клиент-и-сервер). Минимальный пример:
-
-```groovy
-plugins {
-    id 'com.google.protobuf' version '0.9.4'
 }
 
 protobuf {
@@ -202,63 +210,31 @@ protobuf {
 }
 ```
 
-### 4. Сервер
+Point `path` at the script or JAR wrapper produced when building `kafka-rpc-protoc`.
 
-```java
-var impl = new GreeterKafkaRpc.ServiceBase() {
-  @Override protected GetGreetingResponse getGreeting(GetGreetingRequest req) {
-    return GetGreetingResponse.newBuilder().setGreeting("Hello, " + req.getName()).build();
-  }
-};
-String requestTopic = "greeter.request"; // in Spring Boot, resolved from kafka-rpc.service.<name>.request-topic
-var server = new KafkaRpcServer(consumerConfig, producerConfig,
-    requestTopic, impl.getHandlers());
-server.start();
-```
-Reply topic is always taken from the client request header; the server does not need it in config.
-Service name defaults to the proto service name (e.g. `greeter` for `service Greeter`); the request topic is resolved from `kafka-rpc.service.<name>.request-topic` by the auto-configuration.
+### Combined client + server app
 
-Важно: сервер обрабатывает только сообщения с известным `kafka-rpc-method`. Если метод отсутствует или не зарегистрирован у данного сервиса, сообщение игнорируется и пишется `warn` в лог. Fallback на «единственный handler» не используется.
+See [bio4j-kafka-rpc-example](https://github.com/tormoz70/bio4j-kafka-rpc-example): one Spring Boot app with `kafka-rpc-spring-boot-starter`, a single protobuf setup, and both `kafka-rpc.clients.*` and `kafka-rpc.service.*` in `application.yml`.
 
-### 5. Клиент
+## Configuration (`application.yml`)
 
-Для каждого сервиса используйте pooled-канал из `KafkaRpcChannelPool` (Spring) или создавайте `PooledKafkaRpcChannel` вручную (без Spring).
-
-```java
-try (var channel = PooledKafkaRpcChannel.builder()
-    .producerConfig(properties.getProducerPropertiesForClient("greeter"))
-    .consumerConfig(properties.getConsumerPropertiesForClientPooled("greeter"))
-    .requestTopic(properties.getRequestTopicForClient("greeter"))
-    .replyTopic(properties.getReplyTopicForClient("greeter"))
-    .timeoutMs(properties.getTimeoutMsForClient("greeter"))
-    .build()) {
-  var stub = new GreeterKafkaRpc.Stub(channel);
-  var resp = stub.getGreeting(GetGreetingRequest.newBuilder().setName("World").build());
-  System.out.println(resp.getGreeting());
-}
-```
-
-### 6. Конфигурация (много клиентов и серверов)
-
-Подробный справочник по `application.yml` (все ключи, приоритеты, `group.id`, кейсы и анти-кейсы):
+Full reference (keys, priorities, `group.id`, do’s and don’ts):
 [`docs/application-yml-configuration.md`](docs/application-yml-configuration.md)
 
-В `application.yml` под `kafka-rpc`:
-- **Общие настройки:** `bootstrap-servers`, `producer`, `consumer` — база для всех клиентов и серверов. По умолчанию максимальный размер сообщения — 10 MiB (`producer.max.request.size` и `consumer.max.partition.fetch.bytes`); переопределяется через `kafka-rpc.producer.*` / `kafka-rpc.consumer.*` или per-client/per-service. Для сообщений больше 1 MiB также потребуется поднять лимиты на брокере (`message.max.bytes`, `replica.fetch.max.bytes`) и на топике (`max.message.bytes`).
-- **Стриминг (глобально):** `stream-healthcheck-interval-ms` (интервал хелсчека клиента, по умолчанию 5000), `stream-healthcheck-timeout-ms` (таймаут «стрим мёртв» на клиенте, 15000), `stream-server-idle-timeout-ms` (таймаут простоя стрима на сервере; задаётся только на клиенте, передаётся в обязательном заголовке при старте стрима; по умолчанию 20000).
-- **Клиенты:** `clients.<имя>` (имя = сервис в нижнем регистре, например `greeter`). Для каждого: `request-topic`, `reply-topic`, опционально `timeout-ms`, `stream-healthcheck-enabled`, `stream-healthcheck-interval-ms`, `stream-healthcheck-timeout-ms`, `stream-server-idle-timeout-ms` (передаётся серверу в заголовке), `producer`, `consumer` (переопределяют общие).
-- **Серверы (сервисы):** `service.<имя>`. Для каждого: `request-topic`, опционально `producer`, `consumer` (переопределяют общие).
+Under `kafka-rpc`:
 
-Роутинг по топикам и `group.id` — ответственность прикладного разработчика. При общей паре топиков для нескольких связок client/service необходимо самостоятельно исключить пересечение консьюмер-групп и «чужие» сообщения.
+- **Shared:** `bootstrap-servers`, `producer`, `consumer` — defaults for all clients and servers. Default max message size is **10 MiB** (`producer.max.request.size`, `consumer.max.partition.fetch.bytes`). Override via `kafka-rpc.producer.*` / `kafka-rpc.consumer.*` or per client/service. For payloads above ~1 MiB, raise broker (`message.max.bytes`, `replica.fetch.max.bytes`) and topic (`max.message.bytes`) limits as well.
+- **Streaming (global):** `stream-healthcheck-interval-ms` (default `5000`), `stream-healthcheck-timeout-ms` (default `15000`), `stream-server-idle-timeout-ms` (default `20000`; set on the client and sent to the server in a required header when a stream starts).
+- **Clients:** `clients.<name>` (lowercase service name, e.g. `greeter`): `request-topic`, `reply-topic`, optional `timeout-ms`, stream healthcheck settings, `producer` / `consumer` overrides.
+- **Servers:** `service.<name>`: `request-topic`, optional `producer` / `consumer` overrides.
 
-Пример с двумя клиентами и переопределением только для одного:
+Topic routing and `group.id` are the application’s responsibility. If several client/service pairs share the same topic pair, avoid overlapping consumer groups and cross-talk yourself.
 
 ```yaml
 kafka-rpc:
   bootstrap-servers: localhost:9092
   producer: { acks: all }
   consumer: {}
-  # опционально: стриминг (значения по умолчанию)
   # stream-healthcheck-interval-ms: 5000
   # stream-healthcheck-timeout-ms: 15000
   # stream-server-idle-timeout-ms: 20000
@@ -271,9 +247,6 @@ kafka-rpc:
       reply-topic: inventory.reply
       timeout-ms: 10000
       producer: { linger.ms: "5" }
-      # stream-healthcheck-interval-ms: 3000
-      # stream-healthcheck-timeout-ms: 10000
-      # stream-server-idle-timeout-ms: 25000  # передаётся серверу в заголовке при старте стрима
   service:
     greeter:
       request-topic: greeter.request
@@ -282,28 +255,37 @@ kafka-rpc:
       consumer: { max.poll.records: "100" }
 ```
 
-## Сборка
+More docs:
+
+- [Client channel topology & consumer groups](docs/client-channel-topology-and-consumer-groups.md)
+- [Pooled request timeline](docs/pooled-kafka-rpc-request-timeline.md)
+
+## Build
 
 ```bash
 ./gradlew clean build
-# или на Windows:
+# Windows:
 gradlew.bat clean build
 ```
 
-## Пример
+## Example
 
-Запуск Kafka (Docker):
+Start Kafka:
 
 ```bash
 docker run -d --name kafka -p 9092:9092 apache/kafka
 ```
 
-Запуск сервера и клиента:
+Run the [example](https://github.com/tormoz70/bio4j-kafka-rpc-example):
 
 ```bash
-# Терминал 1 — сервер (в проекте bio4j-kafka-rpc-example)
+# Terminal 1 — server/app
 ./gradlew bootRun
 
-# Терминал 2 — клиент
+# Terminal 2 — call
 curl "http://localhost:8080/greet?name=World"
 ```
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
