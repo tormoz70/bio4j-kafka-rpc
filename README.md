@@ -1,5 +1,12 @@
 # Kafka RPC
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Java](https://img.shields.io/badge/Java-21%2B-orange.svg)](https://openjdk.org/)
+[![Kafka](https://img.shields.io/badge/Apache%20Kafka-3.9-black.svg)](https://kafka.apache.org/)
+[![Release](https://img.shields.io/github/v/release/tormoz70/bio4j-kafka-rpc?include_prereleases)](https://github.com/tormoz70/bio4j-kafka-rpc/releases)
+
+**gRPC-style RPC over Apache Kafka for Java 21+.** Protocol Buffers serialization, protoc codegen, unary / oneway / server-streaming, and an optional Spring Boot starter.
+
 Библиотека для RPC поверх Apache Kafka, аналогичная gRPC по API. Использует Protocol Buffers для сериализации и генерирует Java-код из `.proto` файлов.
 
 **Особенности:**
@@ -9,6 +16,8 @@
 - Unary RPC, oneway и server-streaming
 - protoc-плагин для генерации клиентских stub'ов и серверной базы
 - Runtime на `kafka-clients`
+- Spring Boot starter с пулом каналов и автоконфигурацией
+- License: Apache 2.0
 
 ## Модули
 
@@ -42,7 +51,7 @@ plugins {
 
 ```groovy
 dependencies {
-    implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
+    implementation 'ru.sbrf.uamc:kafka-rpc-runtime:1.7'
     implementation 'org.apache.kafka:kafka-clients:3.9.2'
     implementation 'com.google.protobuf:protobuf-java:3.25.8'
 }
@@ -57,7 +66,7 @@ plugins {
 }
 
 dependencies {
-    implementation 'ru.sbrf.uamc:kafka-rpc-spring-boot-starter:0.1.0-SNAPSHOT'
+    implementation 'ru.sbrf.uamc:kafka-rpc-spring-boot-starter:1.7'
     implementation 'org.apache.kafka:kafka-clients:3.9.2'
     implementation 'com.google.protobuf:protobuf-java:3.25.8'
 }
@@ -121,9 +130,9 @@ protobuf {
 
 ```groovy
 dependencies {
-    implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
+    implementation 'ru.sbrf.uamc:kafka-rpc-runtime:1.7'
     // для генерации (compileOnly или отдельная конфигурация):
-    compileOnly 'ru.sbrf.uamc:kafka-rpc-protoc:0.1.0-SNAPSHOT'
+    compileOnly 'ru.sbrf.uamc:kafka-rpc-protoc:1.7'
 }
 
 protobuf {
@@ -151,7 +160,7 @@ protobuf {
 ### 1. Зависимости
 
 ```groovy
-implementation 'ru.sbrf.uamc:kafka-rpc-runtime:0.1.0-SNAPSHOT'
+implementation 'ru.sbrf.uamc:kafka-rpc-runtime:1.7'
 ```
 
 ### 2. proto-файл
