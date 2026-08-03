@@ -1,0 +1,32 @@
+---
+description: GitHub fetch/push/gh — только по SSH
+alwaysApply: true
+---
+
+# GitHub: только SSH
+
+Все операции с GitHub (`git fetch` / `pull` / `push`, `gh`) в этом репозитории — **только по SSH**. HTTPS не использовать: в терминале агента нет credentials, push зависает.
+
+## Перед remote-операцией
+
+1. Прочитать skill `github-ssh` и прогнать preflight:
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.cursor\skills\github-ssh\scripts\ensure-github-ssh.ps1"
+   ```
+2. Exit `0` → можно идти в git/gh. Exit `1` → попросить пользователя в **его** терминале: `& $env:USERPROFILE\.ssh\2-add-ssh-key.ps1`. Exit `2` → admin: `1-enable-ssh-agent-admin.ps1`.
+
+## Как пушить
+
+Если `origin` = `https://github.com/...`, **не** ждать HTTPS и **не** переключать remote без просьбы. Пушить явно по SSH:
+
+```powershell
+git push git@github.com:tormoz70/bio4j-kafka-rpc.git HEAD:master
+```
+
+Это обычный push (refspec), **не** force-push. Не добавлять `--force` / `--force-with-lease` без явной просьбы пользователя.
+
+## Запрещено
+
+- `git push` / `fetch` / `pull` через `https://github.com/...`
+- Перегенерация ключей или смена remote на HTTPS «чтобы заработало»
+- Запрос passphrase SSH в чате — только в терминале пользователя
