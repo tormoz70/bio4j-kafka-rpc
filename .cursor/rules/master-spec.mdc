@@ -1,0 +1,43 @@
+---
+description: Домен Kafka RPC, guardrails и контекст из master-spec
+alwaysApply: true
+---
+
+# Master spec (Kafka RPC)
+
+Авторитетный источник модели библиотеки и ограничений для агента: `.ai/master-spec.yaml`.
+
+Перед **изменением wire-протокола**, **lifecycle канала/сервера/стримов**, **offset commits** или **codegen-конвенций** — прочитай этот файл (или `@.ai/master-spec.yaml` в чате).
+
+## Разделение с другим контекстом
+
+| Файл | Назначение |
+|------|------------|
+| `.ai/master-spec.yaml` | протокол, RPC-типы, guardrails, якоря в коде |
+| `README.md` / `README.ru.md` | quick start, зависимости |
+| `docs/application-yml-configuration.md` | справочник `kafka-rpc.*` |
+| `docs/client-channel-topology-and-consumer-groups.md` | партиции, pool, group.id |
+| `docs/pooled-kafka-rpc-request-timeline.md` | timeline request/reply |
+| `bio4j-kafka-rpc-example` | внешний пример приложения |
+
+## Ключевые ограничения (сводка)
+
+- Заголовки и method wire-format — только из `KafkaRpcConstants` / generator; не выдумывать.
+- Reply-topic задаёт **клиент** в header; сервер его не конфигурирует.
+- Неизвестный `kafka-rpc-method` → ignore + warn; без fallback на «единственный handler».
+- Oneway = `returns google.protobuf.Empty`; scalable stream = имя метода с префикса `Scalable`.
+- Нет client-/bidi-streaming без RFC + MAJOR.
+- Delivery = at-least-once; handlers идемпотентны к reprocess.
+- Commits: не `clear()` до успешного commit; snapshot без гонки; финальный flush после `awaitTermination` в `stop()`.
+- `PooledKafkaRpcChannel`: освобождать ресурсы при ошибке конструктора; инициализировать `streamLastActivity` в `startStream`.
+- Не перезаписывать активный stream context тем же `correlationId` молча.
+- `StreamingCall` закрывать, когда приём не нужен.
+- Лог-события — через `KafkaRpcLogEvents`.
+
+## Верификация
+
+Перед крупным merge по runtime/протоколу — specs из `verification.key_scenarios` в master-spec + `./gradlew clean build`.
+
+## Поддержка актуальности
+
+При изменении протокола/lifecycle обновляй `.ai/master-spec.yaml` и эту сводку, если меняются hard rules. Новый критичный тест — путь в `verification.key_scenarios`.

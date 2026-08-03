@@ -295,6 +295,7 @@ kafka-rpc:
 
 Дополнительно:
 
+- [Мастер-спека](.ai/master-spec.yaml) — архитектура, wire-протокол, контракты API (источник правды для агента)
 - [Топология каналов и consumer groups](docs/client-channel-topology-and-consumer-groups.md)
 - [Таймлайн pooled-запроса](docs/pooled-kafka-rpc-request-timeline.md)
 

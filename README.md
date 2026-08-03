@@ -265,6 +265,7 @@ kafka-rpc:
 
 More docs:
 
+- [Master spec](.ai/master-spec.yaml) — architecture, wire protocol, API contracts (agent source of truth)
 - [Client channel topology & consumer groups](docs/client-channel-topology-and-consumer-groups.md)
 - [Pooled request timeline](docs/pooled-kafka-rpc-request-timeline.md)
 

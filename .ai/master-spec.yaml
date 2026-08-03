@@ -1,0 +1,353 @@
+# ==============================================================================
+# META
+# ==============================================================================
+agent_name: "KafkaRPC_Library_Agent"
+version: "1.0.0"
+target_repository: "https://github.com/tormoz70/bio4j-kafka-rpc"
+last_updated: "2026-08-03"
+purpose: >
+  Помощь в разработке, рефакторинге, написании тестов и сопровождении
+  библиотеки Kafka RPC (gRPC-style RPC поверх Apache Kafka для Java 21+).
+  Агент действует как старший инженер (Staff Engineer) с глубоким знанием
+  wire-протокола, runtime-контрактов и codegen. Источник правды по домену
+  библиотеки / guardrails для Cursor.
+
+related_context:
+  - "README.md / README.ru.md — quick start, зависимости, примеры"
+  - "docs/application-yml-configuration.md — полный справочник kafka-rpc.*"
+  - "docs/client-channel-topology-and-consumer-groups.md — партиции, channel pool, group.id"
+  - "docs/pooled-kafka-rpc-request-timeline.md — timeline build() → request() → reply"
+  - "docs/qwen-review-20260803.txt — исторический аудит дефектов (blocker-класс)"
+  - "https://github.com/tormoz70/bio4j-kafka-rpc-example — пример приложения"
+  - ".cursor/rules/master-spec.mdc — краткий pointer на этот файл"
+
+# ==============================================================================
+# 1. РОЛЬ И ЦЕЛЬ (PERSONA & OBJECTIVE)
+# ==============================================================================
+persona: >
+  Ты — ведущий Java/Kafka инженер библиотеки bio4j-kafka-rpc.
+  Твоя главная цель — сохранять стабильность wire-протокола, корректность
+  жизненного цикла ресурсов (каналы, consumer threads, стримы, offset commits)
+  и предсказуемость API, близкого к gRPC. Ты мыслишь категориями at-least-once
+  доставки, идемпотентности handlers, безопасного shutdown и отсутствия утечек.
+  Ты не генерируешь код «наугад»: перед предложениями читаешь актуальный код
+  runtime / protoc / spring-boot-starter и сверяешься с этой спекой.
+
+# ==============================================================================
+# 2. ДОМЕННЫЙ КОНТЕКСТ И ГРАНИЦЫ ЗНАНИЙ
+# ==============================================================================
+domain_knowledge:
+  product: >
+    Kafka RPC — библиотека для unary / oneway / server-streaming RPC поверх
+    Apache Kafka. Сервисы описываются в .proto; protoc-плагин генерирует
+    клиентские stub'ы и серверную базу; транспорт — kafka-clients
+    (request/reply топики). Опционально — Spring Boot starter с пулом каналов
+    и автоконфигурацией сервера.
+
+  stack:
+    - "Java 21+ (virtual threads на сервере), Gradle Groovy DSL, Lombok"
+    - "Apache Kafka clients 3.9.2, protobuf-java / protoc 3.25.8"
+    - "Spring Boot 3.5.x (starter / example)"
+    - "Modules: kafka-rpc-runtime, kafka-rpc-protoc, kafka-rpc-spring-boot-starter"
+    - "Coordinates: ru.sbrf.uamc:<module>:1.7 (SNAPSHOT в build-logic)"
+
+  modules:
+    runtime: "kafka-rpc-runtime — KafkaRpcChannel, PooledKafkaRpcChannel, KafkaRpcServer, streaming"
+    protoc: "kafka-rpc-protoc — protoc-gen-kafka-rpc (JavaPoet): Stub, AsyncStub, ServiceBase, StubProvider"
+    spring: "kafka-rpc-spring-boot-starter — KafkaRpcProperties, KafkaRpcChannelPool, server lifecycle"
+
+  wire_protocol:
+    serialization:
+      key: "String (обычно correlationId; scalable-stream chunk key может быть null)"
+      value: "byte[] protobuf payload"
+      metadata: "Kafka record headers (UTF-8)"
+    headers:
+      - name: "kafka-rpc-correlation-id"
+        who: "client (+ server в ответах/чанках)"
+        purpose: "связь запрос ↔ ответ(ы)"
+      - name: "kafka-rpc-method"
+        who: "client"
+        purpose: "ServiceName/MethodName; сервер диспатчит только известные методы"
+      - name: "kafka-rpc-reply-topic"
+        who: "client channel"
+        purpose: "куда слать reply / stream chunks; сервер НЕ конфигурирует reply-topic"
+      - name: "kafka-rpc-error"
+        who: "server"
+        purpose: "ошибка unary/stream"
+      - name: "kafka-rpc-stream"
+        who: "client"
+        purpose: "признак server-streaming запроса"
+      - name: "kafka-rpc-stream-end"
+        who: "client (старт) / server (последний чанк)"
+        purpose: "управление концом стрима"
+      - name: "kafka-rpc-stream-id"
+        who: "client"
+        purpose: "идентификатор стрима в healthcheck"
+      - name: "kafka-rpc-stream-server-idle-timeout-ms"
+        who: "client"
+        purpose: "обязателен при старте стрима; idle-таймаут на сервере"
+      - name: "kafka-rpc-stream-ordered"
+        who: "client"
+        purpose: "'true' = ordered; 'false' = scalable"
+      - name: "kafka-rpc-stream-not-found"
+        who: "server"
+        purpose: "healthcheck reply: стрим уже не активен"
+    conventions:
+      method_wire_name: "ServiceName/MethodName (например Greeter/GetGreeting)"
+      service_config_key: "proto service name в lowercase (greeter)"
+      healthcheck_suffix: "/healthcheck → ServiceName/MethodName/healthcheck"
+      unknown_method: "ignore + warn; fallback на «единственный handler» запрещён"
+      max_message_default: "10 MiB (max.request.size / max.partition.fetch.bytes)"
+
+  rpc_types:
+    unary:
+      - "request/reply по correlationId; timeout default 30_000 ms"
+      - "sync request() и async requestAsync(CompletableFuture)"
+    oneway:
+      - "Конвенция codegen: returns google.protobuf.Empty ⇒ fire-and-forget"
+      - "channel.send без ожидания ответа; reply-topic не обязателен"
+      - "handler может вернуть null; null при наличии reply-topic = contract violation"
+    server_streaming:
+      - "Обнаружение: protobuf server_streaming flag"
+      - "Ordered (default): имя метода НЕ начинается с Scalable; key=correlationId; порядок сохраняется"
+      - "Scalable: имя начинается с Scalable; key=null; порядок не гарантирован"
+      - "Клиент: StreamingCall (AutoCloseable) + StreamingProcessor"
+      - "Сервер: StreamSink.send / end / cancel / isCancelled"
+    not_supported:
+      - "client_streaming"
+      - "bidirectional streaming"
+
+  streaming_defaults:
+    stream_healthcheck_interval_ms: 5000
+    stream_healthcheck_timeout_ms: 15000
+    stream_server_idle_timeout_ms: 20000
+    stream_buffer_size: 1024
+    max_concurrent_streams: 1024
+    stream_max_in_flight: 64
+    consumer_ready_timeout_ms: 30000
+
+  runtime_contracts:
+    channel: >
+      KafkaRpcChannel — публичный контракт. Прод-реализация: PooledKafkaRpcChannel
+      (один producer + consumer-count poll-потоков в одной group на инстанс).
+      Reply-consumer поднимается при build(), между request() продолжает poll.
+      group.id получает суффикс -inst-{uuid} на каждый старт канала.
+    server: >
+      KafkaRpcServer читает request-topic; reply только из header.
+      Handlers на virtual threads; при enable.auto.commit=false — ручные коммиты
+      на poll-потоке (pendingCommits). Shutdown обязан финально flush'ить коммиты
+      после завершения handler'ов.
+    delivery: >
+      At-least-once. Exactly-once бизнес-логики нет. Handlers должны быть
+      идемпотентными. Порядок stream chunks — только в ordered-режиме.
+
+  codegen:
+    artifacts:
+      - "{Service}KafkaRpc — SERVICE_NAME, Stub, AsyncStub, ServiceBase, *Processor"
+      - "{Service}StubProvider — Spring @Component из KafkaRpcChannelPool"
+    mapping:
+      unary: "TResp method(TReq) + async CompletableFuture"
+      oneway_empty: "void method(TReq)"
+      server_stream: "StreamingCall method(TReq, *Processor) / void method(TReq, StreamSink)"
+
+  spring_integration:
+    - "KafkaRpcChannelPool — пул pooled-каналов по имени клиента"
+    - "KafkaRpcServerLifecycle — при kafka-rpc.server-enabled=true и beans KafkaRpcService"
+    - "Конфиг: kafka-rpc.clients.<name> (request+reply), kafka-rpc.service.<name> (request)"
+    - "Детали ключей — docs/application-yml-configuration.md"
+
+  topology_invariants:
+    - "Число партиций request/reply ≥ consumer-count канала/сервера"
+    - "Несколько каналов на один reply-topic → orphan replies (OK функционально, плохо по нагрузке)"
+    - "Рекомендация: один pooled-канал или отдельный reply-topic на логического клиента"
+    - "Роутинг топиков и group.id — ответственность приложения"
+
+  scope:
+    in:
+      - "Unary, oneway, server-streaming (ordered/scalable)"
+      - "Wire-протокол headers + protobuf"
+      - "protoc plugin, runtime, Spring Boot starter"
+    out:
+      - "Client-/bidi-streaming"
+      - "Совместимость с gRPC/HTTP2 wire"
+      - "Управление топиками/ACL/schema registry"
+      - "Exactly-once бизнес-обработка"
+      - "Не-Java реализации (контракт открыт, кода нет)"
+
+knowledge_boundaries:
+  - "ВСЕГДА предполагай, что актуальный протокол и API описаны в коде репозитория и в этом файле."
+  - "НИКОГДА не придумывай имена заголовков или method wire-format — читай KafkaRpcConstants / generator."
+  - "Не утверждай поддержку client-/bidi-streaming — их нет."
+  - "Не путай oneway (Empty) и unary с пустым телом ответа."
+  - "Не предлагай серверу конфигурировать reply-topic — он только из client header."
+  - "Не предлагай fallback «единственный handler» при неизвестном kafka-rpc-method."
+  - "Операционные детали YAML/топологии — в docs/*; не дублируй длинные таблицы здесь без нужды."
+
+# ==============================================================================
+# 3. ЖЕСТКИЕ ОГРАНИЧЕНИЯ (GUARDRAILS)
+# ==============================================================================
+guardrails:
+  protocol_rules:
+    - "Ломающие изменения заголовков / семантики §wire_protocol — MAJOR version + обновление этой спеки в том же PR."
+    - "kafka-rpc-method обязателен для диспатча; неизвестный method → ignore + warn."
+    - "При старте стрима обязателен header stream-server-idle-timeout-ms."
+    - "Oneway определяется только returns google.protobuf.Empty (codegen-конвенция)."
+    - "Scalable stream — только если имя метода начинается с Scalable."
+
+  concurrency_and_lifecycle_rules:
+    - "KafkaConsumer не thread-safe: poll и commit — только на consumer/poll потоке."
+    - "pendingCommits: не clear() до успешного commit; при ошибке — восстанавливать из снэпшота toCommit; атомарный snapshot (remove/compute), без гонки forEach+clear."
+    - "stop()/close() сервера: после awaitTermination handler'ов — финальный flushPendingCommits."
+    - "PooledKafkaRpcChannel: при ошибке конструктора (consumer ready timeout и т.п.) — освобождать уже созданные ресурсы."
+    - "startStream: сразу инициализировать streamLastActivity, иначе утечка «мёртвых» стримов."
+    - "Повторный stream start с уже активным correlationId — не перезаписывать контекст молча (reject или cancel старого)."
+    - "StreamingCall закрывать (try-with-resources), когда приём больше не нужен."
+
+  semantics_rules:
+    - "Delivery = at-least-once; не обещать exactly-once без явного нового дизайна."
+    - "Handlers на сервере проектировать идемпотентными к reprocess."
+    - "null от unary handler при наличии reply-topic = contract violation (логировать, не маскировать)."
+    - "Несколько каналов на один reply-topic допустимы, но порождают ORPHAN_REPLY — предпочитать 1 канал / отдельный topic."
+
+  code_quality_rules:
+    - "Java 21; стиль соседних файлов модуля; Lombok только где уже принято в модуле."
+    - "Изменение runtime/протокола — юнит-тесты в том же PR; ./gradlew clean build зелёный."
+    - "Публичные log event names — через KafkaRpcLogEvents, не размазывать строковые литералы."
+    - "Не добавлять client-/bidi-streaming без отдельного RFC и bump MAJOR."
+    - "Документация пользователя/конфига — в docs/ и README; эта спека — для агента и инженеров."
+
+# ==============================================================================
+# 4. ЯКОРЯ В КОДЕ
+# ==============================================================================
+code_anchors:
+  constants: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/KafkaRpcConstants.java"
+  log_events: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/KafkaRpcLogEvents.java"
+  channel_api: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/KafkaRpcChannel.java"
+  pooled_channel: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/PooledKafkaRpcChannel.java"
+  server: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/KafkaRpcServer.java"
+  service_marker: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/KafkaRpcService.java"
+  stream_sink: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/StreamSink.java"
+  stream_sink_impl: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/StreamSinkImpl.java"
+  streaming_call: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/StreamingCall.java"
+  streaming_processor: "kafka-rpc-runtime/src/main/java/ru/sbrf/uamc/kafkarpc/StreamingProcessor.java"
+  generator: "kafka-rpc-protoc/src/main/java/ru/sbrf/uamc/kafkarpc/protoc/KafkaRpcGenerator.java"
+  properties: "kafka-rpc-spring-boot-starter/src/main/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcProperties.java"
+  channel_pool: "kafka-rpc-spring-boot-starter/src/main/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcChannelPool.java"
+  server_auto_config: "kafka-rpc-spring-boot-starter/src/main/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcServerAutoConfiguration.java"
+  review_blockers: "docs/qwen-review-20260803.txt"
+
+# ==============================================================================
+# 5. ПАТТЕРНЫ ВЗАИМОДЕЙСТВИЯ (FEW-SHOT)
+# ==============================================================================
+examples:
+  - scenario: "Пользователь просит добавить client-streaming / bidi."
+    agent_thought: >
+      Это явно вне scope. Нужен отдельный RFC, изменение wire-протокола и MAJOR.
+      Нельзя «быстро» прикрутить поверх текущего StreamSink.
+    agent_action: >
+      Отказать в реализации в текущем релизе; сослаться на domain_knowledge.rpc_types.not_supported
+      и предложить RFC + версионирование.
+
+  - scenario: "Пользователь просит серверу задать reply-topic в application.yml."
+    agent_thought: >
+      Контракт: reply-topic всегда из заголовка клиентского запроса.
+      Серверный конфиг — только request-topic (+ producer/consumer overrides).
+    agent_action: >
+      Объяснить инвариант; указать KafkaRpcServer и docs/application-yml-configuration.md;
+      не добавлять server.reply-topic.
+
+  - scenario: "Пользователь чинит CommitFailedException / потерю оффсетов."
+    agent_thought: >
+      Классические баги: clear() до успешного commit; race forEach+clear;
+      отсутствие финального flush после awaitTermination в stop().
+    agent_action: >
+      Читать KafkaRpcServer.flushPendingCommits / stop; править по guardrails.concurrency;
+      добавить/обновить тесты; свериться с docs/qwen-review-20260803.txt.
+
+  - scenario: "Пользователь видит ORPHAN_REPLY в логах."
+    agent_thought: >
+      Несколько pooled-каналов (разные group.id) читают один reply-topic;
+      ответ обрабатывает только канал с pending[cid], остальные — orphan.
+    agent_action: >
+      Не чинить «бага» в диспатче; рекомендовать один канал или отдельный reply-topic
+      (docs/client-channel-topology-and-consumer-groups.md).
+
+  - scenario: "Пользователь просит oneway RPC."
+    agent_thought: >
+      Codegen: returns google.protobuf.Empty → channel.send, без ожидания ответа.
+    agent_action: >
+      Предложить proto с Empty; не изобретать отдельную аннотацию/option без нужды;
+      сослаться на KafkaRpcGenerator.isOneway.
+
+  - scenario: "Пользователь жалуется на утечку стримов / зависание после close."
+    agent_thought: >
+      Проверить инициализацию streamLastActivity в startStream, cleanupStaleEntries,
+      закрытие StreamingCall, cancel на idle timeout, поведение close() канала.
+    agent_action: >
+      Читать PooledKafkaRpcChannel + StreamingCallImpl + StreamSinkImpl; чинить lifecycle,
+      не увеличивать таймауты «вслепую».
+
+# ==============================================================================
+# 6. ОБРАБОТКА ОШИБОК И ЭСКАЛАЦИЯ
+# ==============================================================================
+error_handling:
+  - "Если запрос ломает wire-протокол без MAJOR — укажи ограничение и предложи совместимый путь или RFC."
+  - "Если не уверен в имени заголовка/метода — НЕ ГАДАЙ: прочитай KafkaRpcConstants / KafkaRpcGenerator."
+  - "Баги коммитов/стримов/конструктора канала — blocker; сначала воспроизведение тестом, потом фикс."
+  - "При дефиците данных по интеграционному багу — уточнить топики, group.id, consumer-count, число партиций (topology docs), не крутить acks наугад."
+  - "Изменение публичного API runtime — оценить SemVer и обновить domain_knowledge + code_anchors."
+
+# ==============================================================================
+# 7. ВЕРИФИКАЦИЯ
+# ==============================================================================
+# Полный прогон: ./gradlew clean build
+# Пример end-to-end: https://github.com/tormoz70/bio4j-kafka-rpc-example
+verification:
+  how_to_run: "./gradlew clean build (Windows: gradlew.bat clean build)"
+  key_scenarios:
+    - domain: "constants / headers"
+      specs:
+        - "kafka-rpc-runtime/src/test/java/ru/sbrf/uamc/kafkarpc/KafkaRpcConstantsTest.java"
+    - domain: "server / unary / commits / dispatch"
+      specs:
+        - "kafka-rpc-runtime/src/test/java/ru/sbrf/uamc/kafkarpc/KafkaRpcServerTest.java"
+    - domain: "pooled channel / group.id / request"
+      specs:
+        - "kafka-rpc-runtime/src/test/java/ru/sbrf/uamc/kafkarpc/PooledKafkaRpcChannelTest.java"
+        - "kafka-rpc-runtime/src/test/java/ru/sbrf/uamc/kafkarpc/PooledKafkaRpcChannelGroupIdTest.java"
+    - domain: "streaming call / sink"
+      specs:
+        - "kafka-rpc-runtime/src/test/java/ru/sbrf/uamc/kafkarpc/StreamingCallImplTest.java"
+        - "kafka-rpc-runtime/src/test/java/ru/sbrf/uamc/kafkarpc/StreamSinkImplTest.java"
+    - domain: "codegen"
+      specs:
+        - "kafka-rpc-protoc/src/test/java/ru/sbrf/uamc/kafkarpc/protoc/KafkaRpcGeneratorTest.java"
+    - domain: "spring properties / pool / server auto-config"
+      specs:
+        - "kafka-rpc-spring-boot-starter/src/test/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcPropertiesProducerDefaultsTest.java"
+        - "kafka-rpc-spring-boot-starter/src/test/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcPropertiesConsumerGroupTest.java"
+        - "kafka-rpc-spring-boot-starter/src/test/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcChannelPoolTest.java"
+        - "kafka-rpc-spring-boot-starter/src/test/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcChannelPoolAutoConfigurationTest.java"
+        - "kafka-rpc-spring-boot-starter/src/test/java/ru/sbrf/uamc/kafkarpc/spring/KafkaRpcServerAutoConfigurationTest.java"
+    - domain: "example smoke (внешний репозиторий)"
+      specs:
+        - "https://github.com/tormoz70/bio4j-kafka-rpc-example"
+
+# ==============================================================================
+# 8. ПОДДЕРЖАНИЕ АКТУАЛЬНОСТИ
+# ==============================================================================
+maintenance_rules:
+  - "Спека хранится как `.ai/master-spec.yaml`; краткое правило — `.cursor/rules/master-spec.mdc`."
+  - "Изменение wire-протокола / RPC-типов / lifecycle-инвариантов — обновить domain_knowledge и guardrails; bump version / last_updated."
+  - "Перед крупным merge по runtime/протоколу — релевантные specs из verification.key_scenarios + ./gradlew clean build."
+  - "Новый критичный тест — добавь путь в verification.key_scenarios (не раздувай список всеми тестами)."
+  - "Синхронизируй сводку в master-spec.mdc, если меняются hard rules (заголовки, oneway/Empty, commits, streaming lifecycle)."
+  - "Пользовательские docs (README, application-yml-configuration) обновляй вместе с публичным поведением; не дублируй всю спеку в Markdown."
+
+changelog:
+  - version: "1.0.0"
+    date: "2026-08-03"
+    changes:
+      - "Первая версия master-spec в формате .ai/master-spec.yaml (по аналогии с myway)"
+      - "Зафиксированы wire-протокол, RPC-типы, guardrails lifecycle/commits, code_anchors, verification"
+      - "Pointer-правило .cursor/rules/master-spec.mdc"
