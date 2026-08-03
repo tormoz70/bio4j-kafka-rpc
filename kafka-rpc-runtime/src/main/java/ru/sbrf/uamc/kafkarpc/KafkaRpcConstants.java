@@ -50,6 +50,9 @@ public class KafkaRpcConstants {
     /** Default maximum concurrent server-streaming RPCs per {@link KafkaRpcServer} instance. */
     public static final int DEFAULT_MAX_CONCURRENT_STREAMS = 1024;
 
+    /** Max in-flight stream chunks per {@link StreamSinkImpl} before {@link StreamSink#send} blocks. */
+    public static final int DEFAULT_STREAM_MAX_IN_FLIGHT = 64;
+
     /**
      * Default maximum Kafka message size (bytes) used by both producer and consumer.
      * Applied as {@code max.request.size} for the producer and {@code max.partition.fetch.bytes}

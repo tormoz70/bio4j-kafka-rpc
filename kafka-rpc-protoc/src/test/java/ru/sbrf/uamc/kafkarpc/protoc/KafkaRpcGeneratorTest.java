@@ -35,6 +35,8 @@ class KafkaRpcGeneratorTest {
         assertNotNull(kafkaRpcFile);
         assertTrue(kafkaRpcFile.contains("StreamBarsProcessor"));
         assertTrue(kafkaRpcFile.contains("startStream"));
+        assertTrue(kafkaRpcFile.contains("StreamingCall"));
+        assertTrue(kafkaRpcFile.contains("return channel.startStream"));
         assertTrue(kafkaRpcFile.contains("HEADER_STREAM_ORDERED"));
     }
 

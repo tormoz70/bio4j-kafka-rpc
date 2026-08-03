@@ -166,6 +166,13 @@ public class KafkaRpcServer implements AutoCloseable {
     KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
                    String requestTopic, Map<String, MethodHandler> handlers,
                    Map<String, StreamMethodHandler> streamHandlers) {
+        this(consumer, producer, requestTopic, handlers, streamHandlers, false);
+    }
+
+    KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
+                   String requestTopic, Map<String, MethodHandler> handlers,
+                   Map<String, StreamMethodHandler> streamHandlers,
+                   boolean manualCommitEnabled) {
         this.consumers = Collections.singletonList(consumer);
         this.producer = producer;
         this.requestTopic = requestTopic;
@@ -174,7 +181,7 @@ public class KafkaRpcServer implements AutoCloseable {
         this.pollIntervalMs = KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS;
         this.consumerGroupId = "<test>";
         this.maxConcurrentStreams = KafkaRpcConstants.DEFAULT_MAX_CONCURRENT_STREAMS;
-        this.manualCommitEnabled = false;
+        this.manualCommitEnabled = manualCommitEnabled;
     }
 
     public void start() {
@@ -267,6 +274,9 @@ public class KafkaRpcServer implements AutoCloseable {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+        }
+        for (Consumer<String, byte[]> c : consumers) {
+            flushPendingCommits(c);
         }
     }
 
@@ -405,7 +415,15 @@ public class KafkaRpcServer implements AutoCloseable {
 
         boolean streamOrdered = parseStreamOrdered(record);
         StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method, streamOrdered);
-        activeStreams.put(correlationId, new StreamContext(sink, idleTimeoutMs));
+        StreamContext newCtx = new StreamContext(sink, idleTimeoutMs);
+        StreamContext existing = activeStreams.putIfAbsent(correlationId, newCtx);
+        if (existing != null) {
+            log.warn("{} topic={} correlationId={} reason=duplicate-active-stream",
+                    KafkaRpcLogEvents.DUPLICATE_CORRELATION_ID, requestTopic, correlationId);
+            sendErrorReply(consumer, record, replyTopic, record.key(), correlationId, method,
+                    "Stream with this correlationId is already active", null);
+            return;
+        }
         byte[] request = record.value();
         scheduleCommit(consumer, record);
         handlerExecutor.submit(() -> {
@@ -547,15 +565,13 @@ public class KafkaRpcServer implements AutoCloseable {
         }
         Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
         offsets.forEach((tp, offset) -> toCommit.put(tp, new OffsetAndMetadata(offset)));
-        offsets.clear();
         try {
             consumer.commitSync(toCommit);
+            toCommit.forEach((tp, offsetAndMetadata) ->
+                    offsets.remove(tp, offsetAndMetadata.offset()));
         } catch (Exception e) {
             log.error("{} topic={} partitions={}",
                     KafkaRpcLogEvents.OFFSET_COMMIT_FAILED, requestTopic, toCommit.keySet(), e);
-            offsets.forEach((tp, offset) -> pendingCommits
-                    .computeIfAbsent(consumer, c -> new ConcurrentHashMap<>())
-                    .merge(tp, offset, Math::max));
         }
     }
 

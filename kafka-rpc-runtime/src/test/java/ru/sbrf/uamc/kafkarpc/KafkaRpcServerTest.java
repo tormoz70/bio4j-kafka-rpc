@@ -2,6 +2,7 @@ package ru.sbrf.uamc.kafkarpc;
 
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.MockConsumer;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.common.TopicPartition;
@@ -16,6 +17,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.*;
@@ -166,6 +168,96 @@ class KafkaRpcServerTest {
 
         await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() ->
                 assertEquals(0, producer.history().size()));
+    }
+
+    @Test
+    void commitsOffsetAfterSuccessfulUnaryReply() {
+        String correlationId = "corr-commit";
+        String method = "Service/Method";
+        byte[] requestData = "request".getBytes();
+        TopicPartition tp = new TopicPartition(REQUEST_TOPIC, 0);
+
+        var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
+                method, (cid, req) -> "ok".getBytes());
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers, Map.of(), true);
+        server.start();
+
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
+        consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            OffsetAndMetadata committed = consumer.committed(tp);
+            assertNotNull(committed);
+            assertEquals(1L, committed.offset());
+        });
+    }
+
+    @Test
+    void retriesCommitAfterCommitFailure() {
+        String correlationId = "corr-retry";
+        String method = "Service/Method";
+        byte[] requestData = "request".getBytes();
+        TopicPartition tp = new TopicPartition(REQUEST_TOPIC, 0);
+        AtomicInteger commitAttempts = new AtomicInteger();
+        consumer = new CommitFailingConsumer(commitAttempts);
+        consumer.subscribe(Collections.singletonList(REQUEST_TOPIC));
+        consumer.rebalance(Collections.singletonList(tp));
+        consumer.updateBeginningOffsets(Map.of(tp, 0L));
+        consumer.updateEndOffsets(Map.of(tp, 1L));
+
+        var handlers = Map.<String, KafkaRpcServer.MethodHandler>of(
+                method, (cid, req) -> "ok".getBytes());
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, handlers, Map.of(), true);
+        server.start();
+
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
+        consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            assertTrue(commitAttempts.get() >= 2);
+            OffsetAndMetadata committed = consumer.committed(tp);
+            assertNotNull(committed);
+            assertEquals(1L, committed.offset());
+        });
+    }
+
+    @Test
+    void stopFlushesPendingCommits() {
+        String correlationId = "corr-stop";
+        String method = "Service/Unknown";
+        byte[] requestData = "request".getBytes();
+        TopicPartition tp = new TopicPartition(REQUEST_TOPIC, 0);
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, Map.of(), Map.of(), true);
+        server.start();
+
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
+        consumer.addRecord(new ConsumerRecord<>(REQUEST_TOPIC, 0, 0, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, requestData, headers, java.util.Optional.empty()));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(0, producer.history().size()));
+
+        server.stop();
+
+        OffsetAndMetadata committed = consumer.committed(tp);
+        assertNotNull(committed);
+        assertEquals(1L, committed.offset());
     }
 
     @Test

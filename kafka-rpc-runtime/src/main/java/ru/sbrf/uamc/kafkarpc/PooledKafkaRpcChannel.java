@@ -68,6 +68,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     private final List<Thread> consumerThreads = new ArrayList<>();
     private final Properties consumerConfigBase;
     private final ConcurrentHashMap<String, Long> streamLastActivity = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, StreamingCallImpl> activeStreamCalls = new ConcurrentHashMap<>();
     private final CountDownLatch consumerReadyLatch;
     private final LongAdder duplicateCorrelationIdCount = new LongAdder();
     private final LongAdder requestTimeoutCount = new LongAdder();
@@ -157,7 +158,6 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                  int pollIntervalMs, int streamBufferSize,
                                  boolean mutateConsumerGroupPerChannelStart,
                                  long consumerReadyTimeoutMs) throws InterruptedException {
-        this.cleanupScheduler.scheduleAtFixedRate(this::cleanupStaleEntries, 30, 30, TimeUnit.SECONDS);
         this.mutateConsumerGroupPerChannelStart = mutateConsumerGroupPerChannelStart;
         this.consumerReadyTimeoutMs = Math.max(1L, consumerReadyTimeoutMs);
         this.requestTopic = requestTopic;
@@ -190,22 +190,30 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         int count = Math.max(1, consumerCount);
         this.consumerReadyLatch = new CountDownLatch(count);
 
-        for (int i = 0; i < count; i++) {
-            final int index = i;
-            Thread t = Thread.ofPlatform()
-                    .name("kafka-rpc-pool-" + replyTopic + "-" + index)
-                    .start(() -> runConsumerLoop(index));
-            consumerThreads.add(t);
-        }
+        try {
+            for (int i = 0; i < count; i++) {
+                final int index = i;
+                Thread t = Thread.ofPlatform()
+                        .name("kafka-rpc-pool-" + replyTopic + "-" + index)
+                        .start(() -> runConsumerLoop(index));
+                consumerThreads.add(t);
+            }
 
-        // Ждём готовности консьюмеров (с таймаутом, чтобы не зависнуть навсегда)
-        if (!consumerReadyLatch.await(this.consumerReadyTimeoutMs, TimeUnit.MILLISECONDS)) {
-            long notReady = consumerReadyLatch.getCount();
-            throw new IllegalStateException(
-                    "Kafka RPC reply consumer not ready within " + this.consumerReadyTimeoutMs + " ms for topic="
-                            + replyTopic + " (" + notReady + " of " + count + " consumers pending assignment)");
+            if (!consumerReadyLatch.await(this.consumerReadyTimeoutMs, TimeUnit.MILLISECONDS)) {
+                long notReady = consumerReadyLatch.getCount();
+                throw new IllegalStateException(
+                        "Kafka RPC reply consumer not ready within " + this.consumerReadyTimeoutMs + " ms for topic="
+                                + replyTopic + " (" + notReady + " of " + count + " consumers pending assignment)");
+            }
+            log.info("All {} consumers ready for topic={}", count, replyTopic);
+            this.cleanupScheduler.scheduleAtFixedRate(this::cleanupStaleEntries, 30, 30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            close();
+            throw e;
+        } catch (RuntimeException e) {
+            close();
+            throw e;
         }
-        log.info("All {} consumers ready for topic={}", count, replyTopic);
     }
 
     // For tests: allows injecting mock producer/consumers without Kafka broker.
@@ -589,9 +597,10 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
     }
 
     @Override
-    public void startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException {
+    public StreamingCall startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException {
         BlockingQueue<StreamChunk> queue = new LinkedBlockingQueue<>(streamBufferSize);
         streamQueues.put(correlationId, queue);
+        streamLastActivity.put(correlationId, System.currentTimeMillis());
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(requestTopic, correlationId, requestBytes);
         record.headers().add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8));
         record.headers().add(KafkaRpcConstants.HEADER_REPLY_TOPIC, replyTopic.getBytes(StandardCharsets.UTF_8));
@@ -612,13 +621,20 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
             producer.send(record).get();
         } catch (Exception e) {
             streamQueues.remove(correlationId);
+            streamLastActivity.remove(correlationId);
             throw new IOException("Failed to send stream request", e);
         }
         String method = headers != null ? headers.get(KafkaRpcConstants.HEADER_METHOD) : "";
-        Runnable onClose = () -> streamQueues.remove(correlationId);
-        new StreamingCallImpl(correlationId, queue, this, method,
+        Runnable onClose = () -> {
+            streamQueues.remove(correlationId);
+            streamLastActivity.remove(correlationId);
+            activeStreamCalls.remove(correlationId);
+        };
+        StreamingCallImpl call = new StreamingCallImpl(correlationId, queue, this, method,
                 streamHealthcheckIntervalMs, streamHealthcheckTimeoutMs, streamHealthcheckEnabled,
                 streamHealthcheckMaxFailures, processor, onClose);
+        activeStreamCalls.put(correlationId, call);
+        return call;
     }
 
     @Override
@@ -693,7 +709,11 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
         if (closed.compareAndSet(false, true)) {
             log.debug("{} --- start close...", KafkaRpcLogEvents.CONSUMER_CLOSING);
 
-            // Закрываем все стримы перед очисткой
+            for (StreamingCallImpl call : activeStreamCalls.values()) {
+                call.close();
+            }
+            activeStreamCalls.clear();
+
             streamQueues.keySet().forEach(this::closeStream);
 
             // Завершаем все ожидающие запросы
@@ -732,9 +752,15 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
 
     @Override
     public void closeStream(String correlationId) {
+        StreamingCallImpl call = activeStreamCalls.remove(correlationId);
+        if (call != null) {
+            call.close();
+            return;
+        }
         BlockingQueue<StreamChunk> queue = streamQueues.get(correlationId);
         if (queue != null) {
             queue.offer(new StreamChunk.Poison(new IOException("Stream closed by channel")));
+            streamQueues.remove(correlationId);
             streamLastActivity.remove(correlationId);
         }
     }

@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Slf4j
-final class StreamingCallImpl {
+final class StreamingCallImpl implements StreamingCall {
     private static final int DEFAULT_MAX_CONSECUTIVE_HEALTHCHECK_FAILURES = 1;
 
     private final String streamId;
@@ -171,7 +171,13 @@ final class StreamingCallImpl {
         }
     }
 
-    void close() {
+    @Override
+    public String correlationId() {
+        return streamId;
+    }
+
+    @Override
+    public void close() {
         if (closed.get()) {
             return;
         }

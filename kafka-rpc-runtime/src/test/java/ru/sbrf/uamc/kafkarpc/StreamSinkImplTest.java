@@ -8,18 +8,13 @@ import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.awaitility.Awaitility.await;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-
-import java.time.Duration;
 
 class StreamSinkImplTest {
 
@@ -30,6 +25,7 @@ class StreamSinkImplTest {
         StreamSinkImpl sink = new StreamSinkImpl(producer, "reply", "corr-1", "Svc/Stream", true);
 
         sink.send("chunk".getBytes(StandardCharsets.UTF_8));
+        await().atMost(Duration.ofSeconds(1)).untilAsserted(() -> assertEquals(1, producer.history().size()));
         sink.end();
 
         assertEquals(2, producer.history().size());
@@ -39,32 +35,34 @@ class StreamSinkImplTest {
 
     @Test
     @Timeout(2)
-    void sendFailsWhenChunkSendFailedAsynchronously() throws Exception {
+    void sendReturnsBeforeBrokerAcknowledges() throws Exception {
+        MockProducer<String, byte[]> producer = new MockProducer<>(false, new StringSerializer(), new ByteArraySerializer());
+        StreamSinkImpl sink = new StreamSinkImpl(producer, "reply", "corr-async", "Svc/Stream", true);
+
+        long startNanos = System.nanoTime();
+        sink.send("chunk".getBytes(StandardCharsets.UTF_8));
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+
+        assertEquals(1, producer.history().size());
+        assertTrue(elapsedMs < 500, "send should return without waiting for broker ack");
+        producer.completeNext();
+    }
+
+    @Test
+    @Timeout(2)
+    void sendFailureCancelsStreamAsynchronously() throws Exception {
         MockProducer<String, byte[]> producer = new MockProducer<>(false, new StringSerializer(), new ByteArraySerializer());
         StreamSinkImpl sink = new StreamSinkImpl(producer, "reply", "corr-2", "Svc/Stream", true);
-        CompletableFuture<Void> sendFuture = CompletableFuture.runAsync(() -> {
-            try {
-                sink.send("chunk".getBytes(StandardCharsets.UTF_8));
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        });
 
-        long waitDeadline = System.currentTimeMillis() + 1_000;
-        while (producer.history().isEmpty() && System.currentTimeMillis() < waitDeadline) {
-            Thread.sleep(10);
-        }
-        assertEquals(1, producer.history().size());
+        sink.send("chunk".getBytes(StandardCharsets.UTF_8));
+        await().atMost(Duration.ofSeconds(1)).untilAsserted(() -> assertEquals(1, producer.history().size()));
         producer.errorNext(new RuntimeException("simulated broker failure"));
 
-        ExecutionException exec = assertThrows(ExecutionException.class,
-                () -> sendFuture.get(1, TimeUnit.SECONDS));
-        Throwable runtime = exec.getCause();
-        assertNotNull(runtime);
-        Throwable io = runtime.getCause();
-        assertInstanceOf(IOException.class, io);
-        IOException error = (IOException) io;
-        assertEquals("Failed to send stream chunk", error.getMessage());
+        await().atMost(Duration.ofSeconds(1)).untilAsserted(() -> {
+            assertTrue(sink.isCancelled());
+            assertEquals(2, producer.history().size());
+            assertNotNull(producer.history().get(1).headers().lastHeader(KafkaRpcConstants.HEADER_ERROR));
+        });
     }
 
     @Test

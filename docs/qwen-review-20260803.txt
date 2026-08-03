@@ -1,0 +1,313 @@
+В ходе детального анализа исходного кода проекта `bio4j-kafka-rpc` был выявлен ряд **критических багов**, связанных с управлением состоянием (state management), конкурентностью (concurrency) и жизненным циклом ресурсов. Некоторые из них гарантированно приведут к репроцессингу сообщений (двойной обработке) и утечкам памяти в production-среде.
+
+Ниже представлен подробный разбор найденных проблем, отсортированный по степени критичности.
+
+---
+
+### 🚨 Критические баги (Critical)
+
+#### 1. `KafkaRpcServer`: Гарантированная потеря коммитов при ошибке `commitSync`
+**Файл:** `KafkaRpcServer.java`, метод `flushPendingCommits`
+Это одна из самых серьезных ошибок в коде. Если происходит исключение при коммите оффсетов (например, `CommitFailedException` во время ребаланса Kafka), код пытается вернуть оффсеты обратно в `pendingCommits` для повторной попытки, но делает это **неправильно**:
+
+```java
+Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
+offsets.forEach((tp, offset) -> toCommit.put(tp, new OffsetAndMetadata(offset)));
+offsets.clear(); // <--- Map очищается здесь!
+try {
+    consumer.commitSync(toCommit);
+} catch (Exception e) {
+    log.error(...);
+    // ВНИМАНИЕ: offsets уже пуст! Итерация ничего не делает.
+    offsets.forEach((tp, offset) -> pendingCommits
+            .computeIfAbsent(consumer, c -> new ConcurrentHashMap<>())
+            .merge(tp, offset, Math::max)); 
+}
+```
+**Последствия:** При любой транзиентной ошибке коммита (что часто бывает при сетевых сбоях или ребалансе) **все накопленные оффсеты теряются навсегда**. При перезапуске сервера это приведет к массовому репроцессингу (дублированию) сообщений.
+**Решение:** Нельзя очищать `offsets` до успешного коммита. Нужно использовать атомарное удаление или итерацию с удалением, а в случае ошибки итерировать по `toCommit`, а не по `offsets`.
+
+#### 2. `KafkaRpcServer`: Потеря коммитов при остановке сервера (Shutdown)
+**Файл:** `KafkaRpcServer.java`, метод `stop()` и цикл `run()`
+При вызове `stop()` поллинг-поток (poll thread) получает `WakeupException`, вызывает `flushPendingCommits` и завершает работу (`break` из цикла).
+Однако в этот момент виртуальные потоки (`handlerExecutor`) все еще дорабатывают последние задачи и вызывают `scheduleCommit()`, добавляя новые оффсеты в `pendingCommits`. После завершения `awaitTermination` этих виртуальных потоков метод `stop()` просто завершается.
+**Последствия:** Финальный вызов `flushPendingCommits` для "грязных" оффсетов **никогда не происходит**. Сообщения, обработанные в последние миллисекунды перед остановкой, не будут закоммичены и обработаются повторно при следующем старте.
+**Решение:** В методе `stop()` после `handlerExecutor.awaitTermination(...)` необходимо принудительно пройтись по всем consumers и вызвать для них `flushPendingCommits`.
+
+#### 3. `KafkaRpcServer`: Race condition при коммите оффсетов
+**Файл:** `KafkaRpcServer.java`, метод `flushPendingCommits`
+Даже если исключить баг с `clear()` (п.1), здесь присутствует классическая гонка (race condition).
+```java
+ConcurrentHashMap<TopicPartition, Long> offsets = pendingCommits.get(consumer);
+Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
+offsets.forEach((tp, offset) -> toCommit.put(tp, new OffsetAndMetadata(offset)));
+offsets.clear(); // <--- Точка уязвимости
+```
+Если в момент между `forEach` и `clear()` виртуальный поток вызовет `scheduleCommit`, он добавит новый оффсет в `offsets`. Сразу после этого `offsets.clear()` безвозвратно удалит этот новый оффсет, и он никогда не будет закоммичен.
+**Решение:** Использовать `pendingCommits.remove(consumer)` для атомарного извлечения карты или применять `compute` для безопасного снэпшота.
+
+#### 4. `PooledKafkaRpcChannel`: Утечка памяти "мертвых" стримов
+**Файл:** `PooledKafkaRpcChannel.java`, метод `cleanupStaleEntries`
+Планировщик чистки стримов опирается на `streamLastActivity`:
+```java
+Long last = streamLastActivity.get(id);
+if (last != null && System.currentTimeMillis() - last > streamServerIdleTimeoutMs * 2) {
+    // очистка...
+}
+```
+Проблема в том, что при создании стрима (`startStream`) запись в `streamQueues` добавляется, но `streamLastActivity` **не инициализируется**. Метка времени появляется только тогда, когда приходит **первый чанк** от сервера.
+**Последствия:** Если сервер упал сразу после получения запроса или сеть потеряла первый чанк, клиент никогда не получит данных. `last` навсегда останется `null`, планировщик будет пропускать этот стрим, и `BlockingQueue` останется в памяти навсегда (Memory Leak).
+**Решение:** В методе `startStream` необходимо сразу делать `streamLastActivity.put(correlationId, System.currentTimeMillis())`.
+
+---
+
+### ⚠️ Серьезные архитектурные и логические проблемы
+
+#### 5. `StreamSinkImpl`: Синхронный `send().get()` убивает производительность стриминга
+**Файл:** `StreamSinkImpl.java`
+Методы `send(chunk)` и `end()` блокируют виртуальный поток до получения `ack` от Kafka-брокера:
+```java
+producer.send(record).get(); 
+```
+**Последствия:**
+* **Падение пропускной способности:** Стриминг превращается в пинг-понг: "отправил чанк -> ждем RTT до брокера -> отправляем следующий". Пайплайн (pipeline) не работает.
+* **Невозможность отмены:** Если брокер недоступен или буфер продюсера переполнен, поток "намертво" виснет на `Future.get()`. Метод `cancel()` не может прервать заблокированный поток, из-за чего "зависшие" стримы невозможно корректно остановить.
+
+#### 6. `PooledKafkaRpcChannel`: Утечка ресурсов при таймауте конструктора
+**Файл:** `PooledKafkaRpcChannel.java`
+В конструкторе сначала создаются тяжелые ресурсы (KafkaProducer, запускаются потоки консьюмеров), и только в самом конце происходит ожидание распределения партиций:
+```java
+if (!consumerReadyLatch.await(this.consumerReadyTimeoutMs, TimeUnit.MILLISECONDS)) {
+    throw new IllegalStateException("...");
+}
+```
+**Последствия:** Если консьюмеры не получили партиции за отведенное время, конструктор бросает исключение. Объект не возвращается пользователю, следовательно, пользователь **никогда не вызовет метод `close()`**. Запущенные потоки и созданное соединение с Kafka (Producer) утекают.
+**Решение:** Обернуть тело конструктора в `try-catch` и в случае любой ошибки вызывать приватный метод очистки ресурсов перед пробросом исключения.
+
+#### 7. `KafkaRpcServer`: Перезапись контекста стрима (Data Corruption)
+**Файл:** `KafkaRpcServer.java`, метод `handleStreamRequest`
+```java
+if (activeStreams.size() >= maxConcurrentStreams && !activeStreams.containsKey(correlationId)) {
+    // reject
+}
+activeStreams.put(correlationId, new StreamContext(sink, idleTimeoutMs));
+```
+Если клиент по ошибке (или из-за бага в сети/ретраев) отправит запрос на стрим с `correlationId`, который **уже активен**, проверка `containsKey` вернет `true`, и сервер разрешит создание нового хэндлера.
+**Последствия:** Новая запись в `activeStreams` затрет старую. Старый виртуальный поток продолжит работать со своим старым `StreamSinkImpl` и слать чанки клиенту. Клиент получит "солянку" из чанков от двух разных серверных обработчиков для одного `correlationId`, что сломает целостность данных.
+**Решение:** Если `correlationId` уже активен, сервер должен либо отклонить новый запрос, либо принудительно отменить старый стрим.
+
+#### 8. `PooledKafkaRpcChannel`: Фантомные потоки после `close()`
+**Файл:** `PooledKafkaRpcChannel.java`, метод `close()`
+Метод `close()` рассылает "яд" (`StreamChunk.Poison`) в очереди стримов через `closeStream`, но **не дожидается** завершения виртуальных потоков (`healthcheckThread` и `drainThread`), которые эти очереди читают. Сразу после этого закрывается `Producer`.
+**Последствия:** Потоки стримов могут продолжить работу, попытаться отправить healthcheck через уже закрытый `producer` и упасть с исключениями, либо продолжить держать ссылки на "мертвые" объекты.
+
+---
+
+### 💡 Рекомендации по рефакторингу API
+В интерфейсе `KafkaRpcChannel` метод `startStream` возвращает `void`, а реализация `StreamingCallImpl` (содержащая метод `close()`) скрыта внутри пакета.
+Это лишает пользователя возможности **корректно и явно** закрыть стрим со стороны клиента, если он больше не хочет принимать данные. Пользователь вынужден полагаться на таймауты или "костыль" в виде вызова `channel.closeStream(correlationId)`. Рекомендуется возвращать объект `StreamingCall` (или `AutoCloseable`), чтобы клиент мог использовать `try-with-resources`.
+
+### Резюме
+Проект имеет хорошую базовую архитектуру, но страдает от классических "болезней" асинхронного кода и работы с Kafka:
+1. Небезопасное управление состоянием оффсетов (потеря коммитов).
+2. Отсутствие инициализации таймстампов (утечки памяти).
+3. Блокирующие вызовы в асинхронных хэндлерах.
+4. Недостаточная защита от сбоев в конструкторах.
+
+Исправление пунктов **1, 2 и 4** критически необходимо перед использованием библиотеки в высоконагруженной production-среде.
+
+
+
+Ниже представлены конкретные решения и паттерны рефакторинга для каждой из выявленных проблем. Внедрение этих исправлений значительно повысит надежность и производительность библиотеки.
+
+---
+
+### 1. Исправление потери коммитов и Race Condition (`KafkaRpcServer`)
+**Проблема:** `offsets.clear()` удаляет данные до успешного коммита, а также удаляет новые оффсеты, пришедшие во время коммита (race condition).
+
+**Решение:** Использовать атомарное удаление `remove(key, value)` вместо `clear()`. Это гарантирует, что мы удалим из кэша *только те* оффсеты, которые реально были закоммичены, сохранив новые значения, если они пришли за время задержки `commitSync`.
+
+```java
+private void flushPendingCommits(Consumer<String, byte[]> consumer) {
+    if (!manualCommitEnabled) return;
+
+    ConcurrentHashMap<TopicPartition, Long> offsets = pendingCommits.get(consumer);
+    if (offsets == null || offsets.isEmpty()) return;
+
+    Map<TopicPartition, OffsetAndMetadata> toCommit = new HashMap<>();
+    // Собираем снапшот, НЕ очищая offsets
+    offsets.forEach((tp, offset) -> toCommit.put(tp, new OffsetAndMetadata(offset)));
+
+    try {
+        consumer.commitSync(toCommit);
+        // Успех! Удаляем только те оффсеты, которые мы только что закоммитили.
+        // Если за время коммита пришел новый оффсет для этой партиции, 
+        // offsets.get(tp) будет больше, и remove(tp, oldOffset) ничего не удалит.
+        toCommit.forEach((tp, offsetAndMetadata) -> 
+            offsets.remove(tp, offsetAndMetadata.offset())
+        );
+    } catch (Exception e) {
+        log.error("{} topic={} partitions={}", KafkaRpcLogEvents.OFFSET_COMMIT_FAILED, requestTopic, toCommit.keySet(), e);
+        // При ошибке оффсеты остаются в offsets и будут отправлены при следующем poll/flush
+    }
+}
+```
+
+---
+
+### 2. Гарантированный финальный коммит при остановке (`KafkaRpcServer`)
+**Проблема:** При `stop()` последние обработанные сообщения не коммитятся, что ведет к их повторной обработке после перезапуска.
+
+**Решение:** Добавить принудительный `flushPendingCommits` в конце метода `stop()`, после завершения всех воркеров и poll-потоков.
+
+```java
+public void stop() {
+    running.set(false);
+    for (Consumer<String, byte[]> c : consumers) c.wakeup();
+    
+    // ... (shutdown executor, interrupt threads, etc.) ...
+
+    for (Thread t : consumerThreads) {
+        try { t.join(5000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+    }
+
+    // ФИНАЛЬНЫЙ КОММИТ: сбрасываем накопленные оффсеты, которые не успели закоммититься
+    for (Consumer<String, byte[]> c : consumers) {
+        flushPendingCommits(c);
+    }
+}
+```
+
+---
+
+### 3. Устранение утечки памяти "мертвых" стримов (`PooledKafkaRpcChannel`)
+**Проблема:** Если сервер не отвечает, `streamLastActivity` никогда не инициализируется, и планировщик очистки игнорирует такие стримы, оставляя их в памяти навсегда.
+
+**Решение:** Инициализировать метку времени в момент создания стрима.
+
+```java
+public StreamingCall startStream(String method, byte[] request, ...) {
+    String correlationId = UUID.randomUUID().toString();
+    BlockingQueue<StreamChunk> queue = new LinkedBlockingQueue<>(streamBufferSize);
+    streamQueues.put(correlationId, queue);
+    
+    // ИСПРАВЛЕНИЕ: Фиксируем время создания, чтобы таймаут сработал даже без ответа сервера
+    streamLastActivity.put(correlationId, System.currentTimeMillis()); 
+
+    // ... отправка запроса в Kafka ...
+    return new StreamingCallImpl(correlationId, queue, this::closeStream);
+}
+```
+
+---
+
+### 4. Асинхронная отправка чанков для стриминга (`StreamSinkImpl`)
+**Проблема:** `producer.send(record).get()` блокирует виртуальный поток до получения ACK от брокера, убивая пропускную способность и делая невозможным корректный `cancel()`.
+
+**Решение:** Использовать неблокирующий `send` с callback-ом. Для сохранения порядка (если `streamOrdered = true`) Kafka Producer гарантирует порядок сообщений с одинаковым ключом (`correlationId`) в рамках партиции, поэтому блокировка не нужна.
+
+```java
+public void send(byte[] chunk) {
+    if (cancelled) return;
+
+    ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, correlationId, chunk);
+    addStreamHeaders(record, false);
+
+    // Асинхронная отправка
+    producer.send(record, (metadata, exception) -> {
+        if (exception != null) {
+            log.error("Failed to send stream chunk for {}", correlationId, exception);
+            cancel(); // Фатальная ошибка сети/брокера -> прерываем стрим
+        }
+    });
+}
+```
+*Примечание:* Если требуется жесткий backpressure (чтобы не переполнять буфер продюсера), можно добавить `Semaphore` с лимитом in-flight requests.
+
+---
+
+### 5. Защита от утечки ресурсов в конструкторе (`PooledKafkaRpcChannel`)
+**Проблема:** Если консьюмеры не получают партиции за отведенное время, конструктор бросает исключение, но уже созданные Producer и потоки остаются висеть (утечка).
+
+**Решение:** Обернуть инициализацию в `try-catch` и вызвать `close()` при любой ошибке.
+
+```java
+public PooledKafkaRpcChannel(...) throws InterruptedException {
+    // ... инициализация полей ...
+    this.producer = new KafkaProducer<>(prod); // Создаем тяжелый ресурс
+    
+    try {
+        // ... запуск потоков консьюмеров ...
+        if (!consumerReadyLatch.await(this.consumerReadyTimeoutMs, TimeUnit.MILLISECONDS)) {
+            throw new IllegalStateException("Kafka RPC reply consumer not ready within timeout");
+        }
+    } catch (Exception e) {
+        // Если что-то пошло не так, закрываем уже созданные ресурсы перед пробросом исключения
+        this.close(); 
+        throw e;
+    }
+}
+```
+*Важно:* Метод `close()` должен быть устойчив к `null` и повторным вызовам (`closed.compareAndSet(false, true)`).
+
+---
+
+### 6. Защита от перезаписи контекста стрима (`KafkaRpcServer`)
+**Проблема:** Повторный запрос с тем же `correlationId` (например, из-за сетевого сбоя и ретрая клиента) перезаписывает старый стрим, приводя к "солянке" из данных на стороне клиента.
+
+**Решение:** Использовать `putIfAbsent` и отклонять дубликаты.
+
+```java
+private void handleStreamRequest(...) {
+    // ... валидация ...
+    StreamSinkImpl sink = new StreamSinkImpl(producer, replyTopic, correlationId, method, streamOrdered);
+    StreamContext newCtx = new StreamContext(sink, idleTimeoutMs);
+    
+    // ИСПРАВЛЕНИЕ: Атомарная проверка и вставка
+    StreamContext existing = activeStreams.putIfAbsent(correlationId, newCtx);
+    if (existing != null) {
+        log.warn("Duplicate stream request for active correlationId={}, dropping.", correlationId);
+        sendErrorReply(consumer, record, replyTopic, record.key(), correlationId, method, 
+            "Stream with this correlationId is already active", null);
+        return;
+    }
+    
+    // ... запуск handlerExecutor ...
+}
+```
+
+---
+
+### 7. Корректное завершение фантомных потоков (`PooledKafkaRpcChannel`)
+**Проблема:** В `close()` не происходит остановки виртуальных потоков (`healthcheckThread`, `drainThread`), которые читают из `streamQueues`. Они могут продолжать работать с закрытым продюсером.
+
+**Решение:** Сохранять ссылки на эти потоки и прерывать их (interrupt) в методе `close()`.
+
+```java
+private final List<Thread> streamWorkerThreads = new CopyOnWriteArrayList<>();
+
+// При создании стрима:
+Thread drainThread = Thread.ofVirtual().name("stream-drain-" + correlationId).start(() -> { ... });
+streamWorkerThreads.add(drainThread);
+
+// В методе close():
+@Override
+public void close() {
+    if (!closed.compareAndSet(false, true)) return;
+    
+    // ... закрытие KafkaProducer и KafkaConsumers ...
+    
+    // Прерываем все зависшие потоки обработки стримов
+    for (Thread t : streamWorkerThreads) {
+        t.interrupt();
+    }
+    streamWorkerThreads.clear();
+}
+```
+
+### Резюме по внедрению
+1. **Приоритет 1 (Критично):** Патчи №1 и №2 (коммиты оффсетов). Без них в production гарантирован репроцессинг данных и возможные финансовые потери/дублирование операций.
+2. **Приоритет 2 (Стабильность):** Патчи №3, №5 и №6 (утечки памяти и ресурсов). Критично для долгоживущих сервисов.
+3. **Приоритет 3 (Производительность):** Патч №4 (асинхронный send). Увеличит throughput стриминга в 10-100 раз.
+
+

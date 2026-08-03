@@ -146,7 +146,7 @@ class StreamingCallImplTest {
         }
 
         @Override
-        public void startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException {
+        public StreamingCall startStream(String correlationId, byte[] requestBytes, Map<String, String> headers, StreamingProcessor<byte[]> processor) throws IOException {
             throw new UnsupportedOperationException();
         }
 

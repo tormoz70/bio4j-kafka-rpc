@@ -19,6 +19,14 @@
 - Spring Boot starter с пулом каналов и автоконфигурацией
 - License: Apache 2.0
 
+Stub'ы server-streaming возвращают `StreamingCall` (`AutoCloseable`). Закрывайте вызов, когда приём данных больше не нужен:
+
+```java
+try (StreamingCall call = stub.streamItems(request, processor)) {
+    // чанки приходят в processor
+}
+```
+
 ## Модули
 
 | Модуль | Описание |

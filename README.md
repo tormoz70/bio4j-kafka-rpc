@@ -30,6 +30,14 @@ Define services in `.proto`, generate client stubs and server bases with a proto
 - Spring Boot starter with channel pool and YAML config
 - Apache License 2.0
 
+Server-streaming stubs return `StreamingCall` (`AutoCloseable`). Close the call when you stop consuming:
+
+```java
+try (StreamingCall call = stub.streamItems(request, processor)) {
+    // chunks delivered to processor callbacks
+}
+```
+
 ## Modules
 
 | Module | Description |

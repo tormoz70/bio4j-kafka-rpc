@@ -8,6 +8,7 @@ dependencies {
     implementation project(':kafka-rpc-runtime')
 
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 def protocPluginJar = tasks.register('protocPluginJar', Jar) {
