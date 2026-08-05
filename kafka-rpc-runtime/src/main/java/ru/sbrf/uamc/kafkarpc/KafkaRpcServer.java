@@ -28,6 +28,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -53,6 +54,7 @@ public class KafkaRpcServer implements AutoCloseable {
     private final int pollIntervalMs;
     private final String consumerGroupId;
     private final int maxConcurrentStreams;
+    private final Semaphore streamSlots;
     private final boolean manualCommitEnabled;
     /** Offsets to commit on the consumer poll thread (KafkaConsumer is not thread-safe). */
     private final ConcurrentHashMap<Consumer<String, byte[]>, ConcurrentHashMap<TopicPartition, Long>> pendingCommits =
@@ -133,6 +135,7 @@ public class KafkaRpcServer implements AutoCloseable {
         this.streamHandlers = streamHandlers != null ? Map.copyOf(streamHandlers) : Map.of();
         this.pollIntervalMs = pollIntervalMs;
         this.maxConcurrentStreams = Math.max(1, maxConcurrentStreams);
+        this.streamSlots = new Semaphore(this.maxConcurrentStreams);
         this.consumerGroupId = consumerConfig.getProperty("group.id", "<undefined>");
         this.manualCommitEnabled = !Boolean.parseBoolean(
                 consumerConfig.getProperty(ENABLE_AUTO_COMMIT_CONFIG, "false"));
@@ -173,6 +176,15 @@ public class KafkaRpcServer implements AutoCloseable {
                    String requestTopic, Map<String, MethodHandler> handlers,
                    Map<String, StreamMethodHandler> streamHandlers,
                    boolean manualCommitEnabled) {
+        this(consumer, producer, requestTopic, handlers, streamHandlers, manualCommitEnabled,
+                KafkaRpcConstants.DEFAULT_MAX_CONCURRENT_STREAMS);
+    }
+
+    KafkaRpcServer(Consumer<String, byte[]> consumer, Producer<String, byte[]> producer,
+                   String requestTopic, Map<String, MethodHandler> handlers,
+                   Map<String, StreamMethodHandler> streamHandlers,
+                   boolean manualCommitEnabled,
+                   int maxConcurrentStreams) {
         this.consumers = Collections.singletonList(consumer);
         this.producer = producer;
         this.requestTopic = requestTopic;
@@ -180,7 +192,8 @@ public class KafkaRpcServer implements AutoCloseable {
         this.streamHandlers = streamHandlers != null ? Map.copyOf(streamHandlers) : Map.of();
         this.pollIntervalMs = KafkaRpcConstants.DEFAULT_POLL_INTERVAL_MS;
         this.consumerGroupId = "<test>";
-        this.maxConcurrentStreams = KafkaRpcConstants.DEFAULT_MAX_CONCURRENT_STREAMS;
+        this.maxConcurrentStreams = Math.max(1, maxConcurrentStreams);
+        this.streamSlots = new Semaphore(this.maxConcurrentStreams);
         this.manualCommitEnabled = manualCommitEnabled;
     }
 
@@ -239,7 +252,9 @@ public class KafkaRpcServer implements AutoCloseable {
                     if (now - ctx.lastHealthcheckTime >= ctx.idleTimeoutMs) {
                         log.info("{} streamId={} action=cancel", KafkaRpcLogEvents.STREAM_IDLE_TIMEOUT, streamId);
                         ctx.sink.cancel();
-                        activeStreams.remove(streamId, ctx);
+                        if (activeStreams.remove(streamId, ctx)) {
+                            streamSlots.release();
+                        }
                     }
                 });
             } catch (InterruptedException e) {
@@ -258,7 +273,7 @@ public class KafkaRpcServer implements AutoCloseable {
             streamIdleThread.interrupt();
         }
         activeStreams.forEach((id, ctx) -> ctx.sink.cancel());
-        activeStreams.clear();
+        activeStreams.keySet().forEach(this::releaseStreamSlot);
         handlerExecutor.shutdown();
         try {
             if (!handlerExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
@@ -405,7 +420,7 @@ public class KafkaRpcServer implements AutoCloseable {
             scheduleCommit(consumer, record);
             return;
         }
-        if (activeStreams.size() >= maxConcurrentStreams && !activeStreams.containsKey(correlationId)) {
+        if (!streamSlots.tryAcquire()) {
             log.warn("{} topic={} correlationId={} active={} limit={}",
                     KafkaRpcLogEvents.STREAM_REJECTED, requestTopic, correlationId, activeStreams.size(), maxConcurrentStreams);
             sendErrorReply(consumer, record, replyTopic, record.key(), correlationId, method,
@@ -418,6 +433,7 @@ public class KafkaRpcServer implements AutoCloseable {
         StreamContext newCtx = new StreamContext(sink, idleTimeoutMs);
         StreamContext existing = activeStreams.putIfAbsent(correlationId, newCtx);
         if (existing != null) {
+            streamSlots.release();
             log.warn("{} topic={} correlationId={} reason=duplicate-active-stream",
                     KafkaRpcLogEvents.DUPLICATE_CORRELATION_ID, requestTopic, correlationId);
             sendErrorReply(consumer, record, replyTopic, record.key(), correlationId, method,
@@ -436,9 +452,15 @@ public class KafkaRpcServer implements AutoCloseable {
                 log.error("{} correlationId={} method={}", KafkaRpcLogEvents.STREAM_HANDLER_FAILED, correlationId, method, e);
                 sink.cancel();
             } finally {
-                activeStreams.remove(correlationId);
+                releaseStreamSlot(correlationId);
             }
         });
+    }
+
+    private void releaseStreamSlot(String correlationId) {
+        if (activeStreams.remove(correlationId) != null) {
+            streamSlots.release();
+        }
     }
 
     private void handleUnaryRequest(Consumer<String, byte[]> consumer, ConsumerRecord<String, byte[]> record,

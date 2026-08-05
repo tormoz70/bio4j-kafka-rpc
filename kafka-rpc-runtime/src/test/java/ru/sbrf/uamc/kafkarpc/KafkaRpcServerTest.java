@@ -17,6 +17,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
@@ -258,6 +260,59 @@ class KafkaRpcServerTest {
         OffsetAndMetadata committed = consumer.committed(tp);
         assertNotNull(committed);
         assertEquals(1L, committed.offset());
+    }
+
+    @Test
+    void rejectsStreamWhenMaxConcurrentStreamsReached() throws Exception {
+        String method = "Service/Stream";
+        TopicPartition tp = new TopicPartition(REQUEST_TOPIC, 0);
+        CountDownLatch firstStreamStarted = new CountDownLatch(1);
+
+        var streamHandlers = Map.<String, KafkaRpcServer.StreamMethodHandler>of(
+                method, (cid, req, sink) -> {
+                    firstStreamStarted.countDown();
+                    try {
+                        while (!Thread.currentThread().isInterrupted() && !sink.isCancelled()) {
+                            Thread.sleep(100);
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                });
+
+        server = new KafkaRpcServer(consumer, producer, REQUEST_TOPIC, Map.of(), streamHandlers, false, 1);
+        server.start();
+
+        consumer.addRecord(streamRequestRecord("stream-1", method, 0L));
+        consumer.updateEndOffsets(Map.of(tp, 1L));
+        assertTrue(firstStreamStarted.await(5, TimeUnit.SECONDS));
+
+        consumer.addRecord(streamRequestRecord("stream-2", method, 1L));
+        consumer.updateEndOffsets(Map.of(tp, 2L));
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertEquals(1, producer.history().size());
+            var sentRecord = producer.history().get(0);
+            assertEquals(REPLY_TOPIC, sentRecord.topic());
+            assertEquals("stream-2", new String(
+                    sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_CORRELATION_ID).value(),
+                    StandardCharsets.UTF_8));
+            assertNotNull(sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_ERROR));
+            assertEquals("Too many concurrent streams", new String(
+                    sentRecord.headers().lastHeader(KafkaRpcConstants.HEADER_ERROR).value(),
+                    StandardCharsets.UTF_8));
+        });
+    }
+
+    private static ConsumerRecord<String, byte[]> streamRequestRecord(String correlationId, String method, long offset) {
+        var headers = new org.apache.kafka.common.header.internals.RecordHeaders();
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_METHOD, method.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_REPLY_TOPIC, REPLY_TOPIC.getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_IS_STREAM, "true".getBytes()));
+        headers.add(new RecordHeader(KafkaRpcConstants.HEADER_STREAM_SERVER_IDLE_TIMEOUT_MS, "60000".getBytes()));
+        return new ConsumerRecord<>(REQUEST_TOPIC, 0, offset, 0L,
+                org.apache.kafka.common.record.TimestampType.CREATE_TIME, 0, 0, correlationId, "req".getBytes(), headers, java.util.Optional.empty());
     }
 
     @Test

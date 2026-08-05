@@ -29,7 +29,9 @@ alwaysApply: true
 - Нет client-/bidi-streaming без RFC + MAJOR.
 - Delivery = at-least-once; handlers идемпотентны к reprocess.
 - Commits: не `clear()` до успешного commit; snapshot без гонки; финальный flush после `awaitTermination` в `stop()`.
-- `PooledKafkaRpcChannel`: освобождать ресурсы при ошибке конструктора; инициализировать `streamLastActivity` в `startStream`.
+- `PooledKafkaRpcChannel`: освобождать ресурсы при ошибке конструктора; инициализировать `streamLastActivity` в `startStream`; `cleanupStaleEntries` чистит orphan activity.
+- `KafkaRpcServer`: `maxConcurrentStreams` — hard cap через Semaphore; release слота при remove из `activeStreams`.
+- `StreamSinkImpl.end`: async STREAM_END через `inFlight`, ожидание ACK как у chunk `send()`.
 - Не перезаписывать активный stream context тем же `correlationId` молча.
 - `StreamingCall` закрывать, когда приём не нужен.
 - Лог-события — через `KafkaRpcLogEvents`.

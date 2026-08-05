@@ -200,6 +200,9 @@ guardrails:
     - "stop()/close() сервера: после awaitTermination handler'ов — финальный flushPendingCommits."
     - "PooledKafkaRpcChannel: при ошибке конструктора (consumer ready timeout и т.п.) — освобождать уже созданные ресурсы."
     - "startStream: сразу инициализировать streamLastActivity, иначе утечка «мёртвых» стримов."
+    - "cleanupStaleEntries: после прохода по streamQueues удалять orphan streamLastActivity (ключи без очереди)."
+    - "maxConcurrentStreams: hard cap через Semaphore (tryAcquire до регистрации, release при remove из activeStreams)."
+    - "StreamSinkImpl.end: async send STREAM_END через inFlight (как send), с ожиданием ACK END через waitForInFlight."
     - "Повторный stream start с уже активным correlationId — не перезаписывать контекст молча (reject или cancel старого)."
     - "StreamingCall закрывать (try-with-resources), когда приём больше не нужен."
 
@@ -281,8 +284,9 @@ examples:
 
   - scenario: "Пользователь жалуется на утечку стримов / зависание после close."
     agent_thought: >
-      Проверить инициализацию streamLastActivity в startStream, cleanupStaleEntries,
-      закрытие StreamingCall, cancel на idle timeout, поведение close() канала.
+      Проверить инициализацию streamLastActivity в startStream, cleanupStaleEntries
+      (в т.ч. orphan activity без streamQueues), закрытие StreamingCall,
+      cancel на idle timeout, поведение close() канала.
     agent_action: >
       Читать PooledKafkaRpcChannel + StreamingCallImpl + StreamSinkImpl; чинить lifecycle,
       не увеличивать таймауты «вслепую».

@@ -440,6 +440,7 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                                 log.warn("{} role=client stream queue timeout, correlationId={}", KafkaRpcLogEvents.RECEIVE, correlationId);
                                 sq.offer(new StreamChunk.Poison(new IOException("Stream delivery timeout")));
                                 streamQueues.remove(correlationId);
+                                streamLastActivity.remove(correlationId);
                             }
                         }
                         continue;
@@ -503,6 +504,8 @@ public class PooledKafkaRpcChannel implements KafkaRpcChannel {
                 streamLastActivity.remove(id);
             }
         });
+
+        streamLastActivity.keySet().removeIf(id -> !streamQueues.containsKey(id));
     }
 
 

@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
 final class StreamSinkImpl implements StreamSink {
@@ -67,16 +68,30 @@ final class StreamSinkImpl implements StreamSink {
             return;
         }
         waitForInFlight();
+        try {
+            inFlight.acquire();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting for in-flight capacity", e);
+        }
         String key = ordered ? correlationId : null;
         ProducerRecord<String, byte[]> record = new ProducerRecord<>(replyTopic, key, new byte[0]);
         record.headers()
                 .add(KafkaRpcConstants.HEADER_CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8))
                 .add(KafkaRpcConstants.HEADER_METHOD, method != null ? method.getBytes(StandardCharsets.UTF_8) : new byte[0])
                 .add(KafkaRpcConstants.HEADER_STREAM_END, "true".getBytes(StandardCharsets.UTF_8));
-        try {
-            producer.send(record).get();
-        } catch (Exception e) {
-            throw new IOException("Failed to send stream end", e);
+        AtomicReference<Exception> sendError = new AtomicReference<>();
+        producer.send(record, (metadata, exception) -> {
+            inFlight.release();
+            if (exception != null) {
+                log.error("{} streamId={} topic={}", KafkaRpcLogEvents.SEND_FAILED, correlationId, replyTopic, exception);
+                sendError.set(exception);
+            }
+        });
+        waitForInFlight();
+        Exception error = sendError.get();
+        if (error != null) {
+            throw new IOException("Failed to send stream end", error);
         }
     }
 
